@@ -22,6 +22,7 @@ package controllers
 
 import (
 	fdbtypes "github.com/FoundationDB/fdb-kubernetes-operator/api/v1beta1"
+	"github.com/FoundationDB/fdb-kubernetes-operator/internal"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
@@ -49,7 +50,7 @@ var _ = Describe("update_sidecar_versions", func() {
 
 		DescribeTable("should return the correct image",
 			func(input testCase, expected string) {
-				err := NormalizeClusterSpec(&input.cluster.Spec, DeprecationOptions{})
+				err := internal.NormalizeClusterSpec(input.cluster, internal.DeprecationOptions{})
 				Expect(err).NotTo(HaveOccurred())
 
 				image, err := getSidecarImage(input.cluster, input.instance)
@@ -66,7 +67,7 @@ var _ = Describe("update_sidecar_versions", func() {
 					instance: FdbInstance{
 						Metadata: &metav1.ObjectMeta{
 							Labels: map[string]string{
-								FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+								fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 							},
 						},
 					},
@@ -80,7 +81,7 @@ var _ = Describe("update_sidecar_versions", func() {
 					instance: FdbInstance{
 						Metadata: &metav1.ObjectMeta{
 							Labels: map[string]string{
-								FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+								fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 							},
 						},
 					},
@@ -94,7 +95,7 @@ var _ = Describe("update_sidecar_versions", func() {
 					instance: FdbInstance{
 						Metadata: &metav1.ObjectMeta{
 							Labels: map[string]string{
-								FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+								fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 							},
 						},
 					},
@@ -121,7 +122,7 @@ var _ = Describe("update_sidecar_versions", func() {
 					instance: FdbInstance{
 						Metadata: &metav1.ObjectMeta{
 							Labels: map[string]string{
-								FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+								fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 							},
 						},
 					},
@@ -148,7 +149,7 @@ var _ = Describe("update_sidecar_versions", func() {
 					instance: FdbInstance{
 						Metadata: &metav1.ObjectMeta{
 							Labels: map[string]string{
-								FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+								fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 							},
 						},
 					},

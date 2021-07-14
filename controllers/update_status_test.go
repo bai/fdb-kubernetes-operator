@@ -139,13 +139,15 @@ var _ = Describe("update_status", func() {
 				instance := FdbInstance{
 					Metadata: &metav1.ObjectMeta{
 						Labels: map[string]string{
-							FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
-							FDBInstanceIDLabel:   "1337",
+							fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+							fdbtypes.FDBInstanceIDLabel:   "1337",
 						},
 					},
 				}
 				cluster := createDefaultCluster()
 				processGroupStatus := fdbtypes.NewProcessGroupStatus("1337", fdbtypes.ProcessClassStorage, []string{"1.1.1.1"})
+				// Reset the status to only tests for the missing Pod
+				processGroupStatus.ProcessGroupConditions = []*fdbtypes.ProcessGroupCondition{}
 
 				_, err := validateInstance(clusterReconciler, context.TODO(), cluster, instance, "", processGroupStatus)
 				Expect(err).NotTo(HaveOccurred())
@@ -266,7 +268,7 @@ var _ = Describe("update_status", func() {
 
 		When("the pod has the wrong spec", func() {
 			BeforeEach(func() {
-				instances[0].Metadata.Annotations[LastSpecKey] = "bad"
+				instances[0].Metadata.Annotations[fdbtypes.LastSpecKey] = "bad"
 			})
 
 			It("should get a condition assigned", func() {
@@ -318,6 +320,64 @@ var _ = Describe("update_status", func() {
 				processGroup := processGroupStatus[len(processGroupStatus)-4]
 				Expect(processGroup.ProcessGroupID).To(Equal("storage-1"))
 				Expect(len(processGroup.ProcessGroupConditions)).To(Equal(1))
+			})
+		})
+
+		When("adding an instance to the InstancesToRemove list", func() {
+			var removedProcessGroup string
+
+			BeforeEach(func() {
+				removedProcessGroup = "storage-1"
+				instances[0].Pod.Status.Phase = corev1.PodFailed
+				cluster.Spec.InstancesToRemove = []string{removedProcessGroup}
+			})
+
+			It("should mark the instance for removal", func() {
+				processGroupStatus, err := validateInstances(clusterReconciler, context.TODO(), cluster, &cluster.Status, processMap, instances, configMap)
+				Expect(err).NotTo(HaveOccurred())
+
+				removalCount := 0
+				for _, processGroup := range processGroupStatus {
+					if processGroup.ProcessGroupID == removedProcessGroup {
+						Expect(processGroup.Remove).To(BeTrue())
+						Expect(processGroup.ExclusionSkipped).To(BeFalse())
+						removalCount++
+						continue
+					}
+
+					Expect(processGroup.Remove).To(BeFalse())
+				}
+
+				Expect(removalCount).To(BeNumerically("==", 1))
+			})
+		})
+
+		When("adding an instance to the InstancesToRemoveWithoutExclusion list", func() {
+			var removedProcessGroup string
+
+			BeforeEach(func() {
+				removedProcessGroup = "storage-1"
+				instances[0].Pod.Status.Phase = corev1.PodFailed
+				cluster.Spec.InstancesToRemoveWithoutExclusion = []string{removedProcessGroup}
+			})
+
+			It("should be mark the instance for removal without exclusion", func() {
+				processGroupStatus, err := validateInstances(clusterReconciler, context.TODO(), cluster, &cluster.Status, processMap, instances, configMap)
+				Expect(err).NotTo(HaveOccurred())
+
+				removalCount := 0
+				for _, processGroup := range processGroupStatus {
+					if processGroup.ProcessGroupID == removedProcessGroup {
+						Expect(processGroup.Remove).To(BeTrue())
+						Expect(processGroup.ExclusionSkipped).To(BeTrue())
+						removalCount++
+						continue
+					}
+
+					Expect(processGroup.Remove).To(BeFalse())
+				}
+
+				Expect(removalCount).To(BeNumerically("==", 1))
 			})
 		})
 	})

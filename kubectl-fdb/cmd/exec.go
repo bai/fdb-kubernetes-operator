@@ -39,7 +39,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	fdbtypes "github.com/FoundationDB/fdb-kubernetes-operator/api/v1beta1"
-	"github.com/FoundationDB/fdb-kubernetes-operator/controllers"
 )
 
 func newExecCmd(streams genericclioptions.IOStreams) *cobra.Command {
@@ -50,7 +49,7 @@ func newExecCmd(streams genericclioptions.IOStreams) *cobra.Command {
 		Short: "Runs a command on a container in an FDB cluster",
 		Long:  "Runs a command on a container in an FDB cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cluster, err := cmd.Flags().GetString("fdb-cluster")
+			clusterName, err := cmd.Flags().GetString("fdb-cluster")
 			if err != nil {
 				return err
 			}
@@ -70,6 +69,11 @@ func newExecCmd(streams genericclioptions.IOStreams) *cobra.Command {
 			}
 
 			namespace, err := getNamespace(*o.configFlags.Namespace)
+			if err != nil {
+				return err
+			}
+
+			cluster, err := loadCluster(kubeClient, namespace, clusterName)
 			if err != nil {
 				return err
 			}
@@ -104,28 +108,35 @@ func newExecCmd(streams genericclioptions.IOStreams) *cobra.Command {
 	return cmd
 }
 
-func buildCommand(kubeClient client.Client, clusterName string, context string, namespace string, commandArgs []string) (exec.Cmd, error) {
+func buildCommand(kubeClient client.Client, cluster *fdbtypes.FoundationDBCluster, context string, namespace string, commandArgs []string) (exec.Cmd, error) {
 	pods := &corev1.PodList{}
 
-	clusterRequirement, err := labels.NewRequirement(controllers.FDBClusterLabel, selection.Equals, []string{clusterName})
+	selector := labels.NewSelector()
+
+	for key, value := range cluster.Spec.LabelConfig.MatchLabels {
+		requirement, err := labels.NewRequirement(key, selection.Equals, []string{value})
+		if err != nil {
+			return exec.Cmd{}, nil
+		}
+		selector.Add(*requirement)
+	}
+
+	processClassRequirement, err := labels.NewRequirement(fdbtypes.FDBProcessClassLabel, selection.Exists, nil)
 	if err != nil {
 		return exec.Cmd{}, nil
 	}
-	processClassRequirement, err := labels.NewRequirement(controllers.FDBProcessClassLabel, selection.Exists, nil)
-	if err != nil {
-		return exec.Cmd{}, nil
-	}
+	selector.Add(*processClassRequirement)
 
 	err = kubeClient.List(ctx.Background(), pods,
 		client.InNamespace(namespace),
-		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*clusterRequirement, *processClassRequirement)},
+		client.MatchingLabelsSelector{Selector: selector},
 		client.MatchingFields{"status.phase": "Running"},
 	)
 	if err != nil {
 		return exec.Cmd{}, err
 	}
 	if len(pods.Items) == 0 {
-		return exec.Cmd{}, fmt.Errorf("No usable pods found for cluster %s", clusterName)
+		return exec.Cmd{}, fmt.Errorf("no usable pods found for cluster %s", cluster.Name)
 	}
 	kubectlPath, err := exec.LookPath("kubectl")
 	if err != nil {
@@ -158,8 +169,8 @@ func buildCommand(kubeClient client.Client, clusterName string, context string, 
 	return execCommand, nil
 }
 
-func runExec(kubeClient client.Client, clusterName string, context string, namespace string, commandArgs []string) error {
-	command, err := buildCommand(kubeClient, clusterName, context, namespace, commandArgs)
+func runExec(kubeClient client.Client, cluster *fdbtypes.FoundationDBCluster, context string, namespace string, commandArgs []string) error {
+	command, err := buildCommand(kubeClient, cluster, context, namespace, commandArgs)
 	if err != nil {
 		return err
 	}

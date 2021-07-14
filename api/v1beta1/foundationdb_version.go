@@ -41,11 +41,12 @@ type FdbVersion struct {
 	Patch int
 }
 
-var fdbVersionRegex = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)$`)
+// FDBVersionRegex describes the format of a FoundationDB version.
+var FDBVersionRegex = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 
 // ParseFdbVersion parses a version from its string representation.
 func ParseFdbVersion(version string) (FdbVersion, error) {
-	matches := fdbVersionRegex.FindStringSubmatch(version)
+	matches := FDBVersionRegex.FindStringSubmatch(version)
 	if matches == nil {
 		return FdbVersion{}, fmt.Errorf("could not parse FDB version from %s", version)
 	}
@@ -71,6 +72,11 @@ func ParseFdbVersion(version string) (FdbVersion, error) {
 // String gets the string representation of an FDB version.
 func (version FdbVersion) String() string {
 	return fmt.Sprintf("%d.%d.%d", version.Major, version.Minor, version.Patch)
+}
+
+// Compact prints the version in the major.minor format.
+func (version FdbVersion) Compact() string {
+	return fmt.Sprintf("%d.%d", version.Major, version.Minor)
 }
 
 // IsAtLeast determines if a version is greater than or equal to another version.
@@ -148,4 +154,52 @@ func (version FdbVersion) HasSidecarCrashOnEmpty() bool {
 // potential bugs with non-blocking excludes.
 func (version FdbVersion) HasNonBlockingExcludes() bool {
 	return version.IsAtLeast(FdbVersion{Major: 6, Minor: 3, Patch: 5})
+}
+
+// NextMajorVersion returns the next major version of FoundationDB.
+func (version FdbVersion) NextMajorVersion() FdbVersion {
+	return FdbVersion{Major: version.Major + 1, Minor: 0, Patch: 0}
+}
+
+// NextMinorVersion returns the next minor version of FoundationDB.
+func (version FdbVersion) NextMinorVersion() FdbVersion {
+	return FdbVersion{Major: version.Major, Minor: version.Minor + 1, Patch: 0}
+}
+
+// NextPatchVersion returns the next patch version of FoundationDB.
+func (version FdbVersion) NextPatchVersion() FdbVersion {
+	return FdbVersion{Major: version.Major, Minor: version.Minor, Patch: version.Patch + 1}
+}
+
+// Equal checks if two FdbVersion are the same.
+func (version FdbVersion) Equal(other FdbVersion) bool {
+	return version.Major == other.Major &&
+		version.Minor == other.Minor &&
+		version.Patch == other.Patch
+}
+
+// Versions provides a shorthand for known versions.
+// This is only to be used in testing.
+var Versions = struct {
+	NextMajorVersion, NextPatchVersion,
+	WithSidecarInstanceIDSubstitution, WithoutSidecarInstanceIDSubstitution,
+	WithCommandLineVariablesForSidecar, WithEnvironmentVariablesForSidecar,
+	WithBinariesFromMainContainer, WithoutBinariesFromMainContainer,
+	WithRatekeeperRole, WithoutRatekeeperRole,
+	WithSidecarCrashOnEmpty, WithoutSidecarCrashOnEmpty,
+	Default FdbVersion
+}{
+	Default:                              FdbVersion{Major: 6, Minor: 2, Patch: 20},
+	NextPatchVersion:                     FdbVersion{Major: 6, Minor: 2, Patch: 21},
+	NextMajorVersion:                     FdbVersion{Major: 7, Minor: 0, Patch: 0},
+	WithSidecarInstanceIDSubstitution:    FdbVersion{Major: 6, Minor: 2, Patch: 15},
+	WithoutSidecarInstanceIDSubstitution: FdbVersion{Major: 6, Minor: 2, Patch: 11},
+	WithCommandLineVariablesForSidecar:   FdbVersion{Major: 6, Minor: 2, Patch: 15},
+	WithEnvironmentVariablesForSidecar:   FdbVersion{Major: 6, Minor: 2, Patch: 11},
+	WithBinariesFromMainContainer:        FdbVersion{Major: 6, Minor: 2, Patch: 15},
+	WithoutBinariesFromMainContainer:     FdbVersion{Major: 6, Minor: 2, Patch: 11},
+	WithRatekeeperRole:                   FdbVersion{Major: 6, Minor: 2, Patch: 15},
+	WithoutRatekeeperRole:                FdbVersion{Major: 6, Minor: 1, Patch: 12},
+	WithSidecarCrashOnEmpty:              FdbVersion{Major: 6, Minor: 2, Patch: 20},
+	WithoutSidecarCrashOnEmpty:           FdbVersion{Major: 6, Minor: 2, Patch: 15},
 }

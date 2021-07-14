@@ -18,9 +18,14 @@ package v1beta1
 
 import (
 	"encoding/json"
+	"math"
+	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +36,8 @@ import (
 )
 
 var _ = Describe("[api] FoundationDBCluster", func() {
+	log := logf.Log.WithName("controller")
+
 	When("getting the default role counts", func() {
 		It("should return the default role counts", func() {
 			cluster := &FoundationDBCluster{
@@ -456,557 +463,6 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 		})
 	})
 
-	When("parsing the status json with a 6.1 cluster", func() {
-		It("should parse all values correctly", func() {
-			statusFile, err := os.OpenFile(filepath.Join("testdata", "fdb_status_6_1.json"), os.O_RDONLY, os.ModePerm)
-			Expect(err).NotTo(HaveOccurred())
-			defer statusFile.Close()
-			statusDecoder := json.NewDecoder(statusFile)
-			status := FoundationDBStatus{}
-			err = statusDecoder.Decode(&status)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(status).To(Equal(FoundationDBStatus{
-				Client: FoundationDBStatusLocalClientInfo{
-					Coordinators: FoundationDBStatusCoordinatorInfo{
-						Coordinators: []FoundationDBStatusCoordinator{
-							{
-								Address:   "10.1.38.82:4501",
-								Reachable: true,
-							},
-							{
-								Address:   "10.1.38.86:4501",
-								Reachable: true,
-							},
-							{
-								Address:   "10.1.38.91:4501",
-								Reachable: true,
-							},
-						},
-					},
-					DatabaseStatus: FoundationDBStatusClientDBStatus{Available: true, Healthy: true},
-				},
-				Cluster: FoundationDBStatusClusterInfo{
-					DatabaseConfiguration: DatabaseConfiguration{
-						RedundancyMode: "double",
-						StorageEngine:  "ssd-2",
-						UsableRegions:  1,
-						Regions:        nil,
-						RoleCounts:     RoleCounts{Storage: 0, Logs: 3, Proxies: 3, Resolvers: 1, LogRouters: 0, RemoteLogs: 0},
-						VersionFlags:   VersionFlags{LogSpill: 1},
-					},
-					Processes: map[string]FoundationDBStatusProcessInfo{
-						"c813e585043a7ab55a4905f465c4aa52": {
-							Address:      "10.1.38.91:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-3 --locality_machineid=sample-cluster-storage-3 --locality_zoneid=sample-cluster-storage-3 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.91:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "storage-3",
-								"machineid":   "sample-cluster-storage-3",
-								"processid":   "c813e585043a7ab55a4905f465c4aa52",
-								"zoneid":      "sample-cluster-storage-3",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.009,
-						},
-						"f9efa90fc104f4e277b140baf89aab66": {
-							Address:      "10.1.38.82:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-1 --locality_machineid=sample-cluster-storage-1 --locality_zoneid=sample-cluster-storage-1 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.82:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "storage-1",
-								"machineid":   "sample-cluster-storage-1",
-								"processid":   "f9efa90fc104f4e277b140baf89aab66",
-								"zoneid":      "sample-cluster-storage-1",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.008,
-						},
-						"5a633d7f4e98a6c938c84b97ec4aedbf": {
-							Address:      "10.1.38.89:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-2 --locality_machineid=sample-cluster-log-2 --locality_zoneid=sample-cluster-log-2 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.89:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "log-2",
-								"machineid":   "sample-cluster-log-2",
-								"processid":   "5a633d7f4e98a6c938c84b97ec4aedbf",
-								"zoneid":      "sample-cluster-log-2",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.009,
-						},
-						"5c1b68147a0ef34ce005a38245851270": {
-							Address:      "10.1.38.88:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-4 --locality_machineid=sample-cluster-log-4 --locality_zoneid=sample-cluster-log-4 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.88:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"machineid":   "sample-cluster-log-4",
-								"processid":   "5c1b68147a0ef34ce005a38245851270",
-								"zoneid":      "sample-cluster-log-4",
-								"instance_id": "log-4",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.008,
-						},
-						"653defde43cf1fdef131e2fb82bd192d": {
-							Address:      "10.1.38.87:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-1 --locality_machineid=sample-cluster-log-1 --locality_zoneid=sample-cluster-log-1 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.87:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "log-1",
-								"machineid":   "sample-cluster-log-1",
-								"processid":   "653defde43cf1fdef131e2fb82bd192d",
-								"zoneid":      "sample-cluster-log-1",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.01,
-						},
-						"9c93d3b70118f16c72f7cb3f53e49f4c": {
-							Address:      "10.1.38.86:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-2 --locality_machineid=sample-cluster-storage-2 --locality_zoneid=sample-cluster-storage-2 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.86:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"processid":   "9c93d3b70118f16c72f7cb3f53e49f4c",
-								"zoneid":      "sample-cluster-storage-2",
-								"instance_id": "storage-2",
-								"machineid":   "sample-cluster-storage-2",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.008,
-						},
-						"b9c25278c0fa207bc2a73bda2300d0a9": {
-							Address:      "10.1.38.90:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/var/dynamic-conf/bin/6.1.12/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-3 --locality_machineid=sample-cluster-log-3 --locality_zoneid=sample-cluster-log-3 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.90:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"processid":   "b9c25278c0fa207bc2a73bda2300d0a9",
-								"zoneid":      "sample-cluster-log-3",
-								"instance_id": "log-3",
-								"machineid":   "sample-cluster-log-3",
-							},
-							Version:       "6.1.12",
-							UptimeSeconds: 160.01,
-						},
-					},
-					Data: FoundationDBStatusDataStatistics{
-						KVBytes:    0,
-						MovingData: FoundationDBStatusMovingData{HighestPriority: 0, InFlightBytes: 0, InQueueBytes: 0},
-					},
-					FullReplication: true,
-					Clients: FoundationDBStatusClusterClientInfo{
-						Count: 6,
-						SupportedVersions: []FoundationDBStatusSupportedVersion{
-							{
-								ClientVersion: "6.1.8",
-								ConnectedClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.83:47846",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.83:47958",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.84:43094",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.84:43180",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.85:53594",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.85:53626",
-										LogGroup: "sample-cluster-client",
-									},
-								},
-								ProtocolVersion: "fdb00b061060001",
-								SourceVersion:   "bd6b10cbcee08910667194e6388733acd3b80549",
-							},
-							{
-								ClientVersion: "6.2.15",
-								ConnectedClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.83:47846",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.83:47958",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.84:43094",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.84:43180",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.85:53594",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.85:53626",
-										LogGroup: "sample-cluster-client",
-									},
-								},
-								ProtocolVersion: "fdb00b062010001",
-								SourceVersion:   "20566f2ff06a7e822b30e8cfd91090fbd863a393",
-							},
-						},
-					},
-					Layers: FoundationDBStatusLayerInfo{
-						Backup: FoundationDBStatusBackupInfo{
-							Tags: map[string]FoundationDBStatusBackupTag{
-								"default": {
-									CurrentContainer: "blobstore://minio@minio-service:9000/sample-cluster-test-backup?bucket=fdb-backups",
-									RunningBackup:    true,
-									Restorable:       false,
-								},
-							},
-						},
-					},
-				},
-			}))
-		})
-	})
-
-	When("parsing the status json with a 6.2 cluster", func() {
-		It("should parse all values correctly", func() {
-			statusFile, err := os.OpenFile(filepath.Join("testdata", "fdb_status_6_2.json"), os.O_RDONLY, os.ModePerm)
-			Expect(err).NotTo(HaveOccurred())
-			defer statusFile.Close()
-			statusDecoder := json.NewDecoder(statusFile)
-			status := FoundationDBStatus{}
-			err = statusDecoder.Decode(&status)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(status).To(Equal(FoundationDBStatus{
-				Client: FoundationDBStatusLocalClientInfo{
-					Coordinators: FoundationDBStatusCoordinatorInfo{
-						Coordinators: []FoundationDBStatusCoordinator{
-							{
-								Address:   "10.1.38.94:4501",
-								Reachable: true,
-							},
-							{
-								Address:   "10.1.38.102:4501",
-								Reachable: true,
-							},
-							{
-								Address:   "10.1.38.104:4501",
-								Reachable: true,
-							},
-						},
-					},
-					DatabaseStatus: FoundationDBStatusClientDBStatus{Available: true, Healthy: true},
-				},
-				Cluster: FoundationDBStatusClusterInfo{
-					DatabaseConfiguration: DatabaseConfiguration{
-						RedundancyMode: "double",
-						StorageEngine:  "ssd-2",
-						UsableRegions:  1,
-						Regions:        nil,
-						RoleCounts:     RoleCounts{Storage: 0, Logs: 3, Proxies: 3, Resolvers: 1, LogRouters: 0, RemoteLogs: 0},
-						VersionFlags:   VersionFlags{LogSpill: 2},
-					},
-					Processes: map[string]FoundationDBStatusProcessInfo{
-						"b9c25278c0fa207bc2a73bda2300d0a9": {
-							Address:      "10.1.38.93:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/usr/bin/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-3 --locality_machineid=sample-cluster-log-3 --locality_zoneid=sample-cluster-log-3 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.93:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"processid":   "b9c25278c0fa207bc2a73bda2300d0a9",
-								"zoneid":      "sample-cluster-log-3",
-								"instance_id": "log-3",
-								"machineid":   "sample-cluster-log-3",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 2955.58,
-						},
-						"c813e585043a7ab55a4905f465c4aa52": {
-							Address:      "10.1.38.95:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/usr/bin/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-3 --locality_machineid=sample-cluster-storage-3 --locality_zoneid=sample-cluster-storage-3 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.95:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "storage-3",
-								"machineid":   "sample-cluster-storage-3",
-								"processid":   "c813e585043a7ab55a4905f465c4aa52",
-								"zoneid":      "sample-cluster-storage-3",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 2475.33,
-						},
-						"f9efa90fc104f4e277b140baf89aab66": {
-							Address:      "10.1.38.92:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/usr/bin/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-1 --locality_machineid=sample-cluster-storage-1 --locality_zoneid=sample-cluster-storage-1 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.92:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "storage-1",
-								"machineid":   "sample-cluster-storage-1",
-								"processid":   "f9efa90fc104f4e277b140baf89aab66",
-								"zoneid":      "sample-cluster-storage-1",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 2951.17,
-						},
-						"5a633d7f4e98a6c938c84b97ec4aedbf": {
-							Address:      "10.1.38.105:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/usr/bin/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-2 --locality_machineid=sample-cluster-log-2 --locality_zoneid=sample-cluster-log-2 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.105:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "log-2",
-								"machineid":   "sample-cluster-log-2",
-								"processid":   "5a633d7f4e98a6c938c84b97ec4aedbf",
-								"zoneid":      "sample-cluster-log-2",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 710.119,
-						},
-						"5c1b68147a0ef34ce005a38245851270": {
-							Address:      "10.1.38.102:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/usr/bin/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-4 --locality_machineid=sample-cluster-log-4 --locality_zoneid=sample-cluster-log-4 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.102:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"zoneid":      "sample-cluster-log-4",
-								"instance_id": "log-4",
-								"machineid":   "sample-cluster-log-4",
-								"processid":   "5c1b68147a0ef34ce005a38245851270",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 1095.18,
-						},
-						"653defde43cf1fdef131e2fb82bd192d": {
-							Address:      "10.1.38.104:4501",
-							ProcessClass: ProcessClassLog,
-							CommandLine:  "/usr/bin/fdbserver --class=log --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=log-1 --locality_machineid=sample-cluster-log-1 --locality_zoneid=sample-cluster-log-1 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.104:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "log-1",
-								"machineid":   "sample-cluster-log-1",
-								"processid":   "653defde43cf1fdef131e2fb82bd192d",
-								"zoneid":      "sample-cluster-log-1",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 880.18,
-						},
-						"9c93d3b70118f16c72f7cb3f53e49f4c": {
-							Address:      "10.1.38.94:4501",
-							ProcessClass: ProcessClassStorage,
-							CommandLine:  "/usr/bin/fdbserver --class=storage --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --knob_disable_posix_kernel_aio=1 --locality_instance_id=storage-2 --locality_machineid=sample-cluster-storage-2 --locality_zoneid=sample-cluster-storage-2 --logdir=/var/log/fdb-trace-logs --loggroup=sample-cluster --public_address=10.1.38.94:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
-							Excluded:     false,
-							Locality: map[string]string{
-								"instance_id": "storage-2",
-								"machineid":   "sample-cluster-storage-2",
-								"processid":   "9c93d3b70118f16c72f7cb3f53e49f4c",
-								"zoneid":      "sample-cluster-storage-2",
-							},
-							Version:       "6.2.15",
-							UptimeSeconds: 2650.5,
-						},
-					},
-					Data: FoundationDBStatusDataStatistics{
-						KVBytes:    0,
-						MovingData: FoundationDBStatusMovingData{HighestPriority: 0, InFlightBytes: 0, InQueueBytes: 0},
-					},
-					FullReplication: true,
-					Clients: FoundationDBStatusClusterClientInfo{
-						Count: 8,
-						SupportedVersions: []FoundationDBStatusSupportedVersion{
-							{
-								ClientVersion: "Unknown",
-								ConnectedClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.92:52762",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.92:56406",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:43346",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:43354",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:51458",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:51472",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:59442",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:59942",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:60222",
-										LogGroup: "default",
-									},
-									{
-										Address:  "10.1.38.103:60230",
-										LogGroup: "default",
-									},
-								},
-								MaxProtocolClients: nil,
-								ProtocolVersion:    "Unknown",
-								SourceVersion:      "Unknown",
-							},
-							{
-								ClientVersion: "6.1.8",
-								ConnectedClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.106:35640",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36128",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36802",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:42234",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:49684",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47320",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47388",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:58734",
-										LogGroup: "sample-cluster-client",
-									},
-								},
-								MaxProtocolClients: nil,
-								ProtocolVersion:    "fdb00b061060001",
-								SourceVersion:      "bd6b10cbcee08910667194e6388733acd3b80549",
-							},
-							{
-								ClientVersion: "6.2.15",
-								ConnectedClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.106:35640",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36128",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36802",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:42234",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:49684",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47320",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47388",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:58734",
-										LogGroup: "sample-cluster-client",
-									},
-								},
-								MaxProtocolClients: []FoundationDBStatusConnectedClient{
-									{
-										Address:  "10.1.38.106:35640",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36128",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.106:36802",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:42234",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.107:49684",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47320",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:47388",
-										LogGroup: "sample-cluster-client",
-									},
-									{
-										Address:  "10.1.38.108:58734",
-										LogGroup: "sample-cluster-client",
-									},
-								},
-								ProtocolVersion: "fdb00b062010001",
-								SourceVersion:   "20566f2ff06a7e822b30e8cfd91090fbd863a393",
-							},
-						},
-					},
-					Layers: FoundationDBStatusLayerInfo{
-						Backup: FoundationDBStatusBackupInfo{
-							Tags: map[string]FoundationDBStatusBackupTag{
-								"default": {
-									CurrentContainer: "blobstore://minio@minio-service:9000/sample-cluster-test-backup?bucket=fdb-backups",
-									RunningBackup:    true,
-									Restorable:       false,
-								},
-							},
-						},
-					},
-				},
-			}))
-		})
-	})
-
 	When("parsing the backup status for 6.2", func() {
 		It("should be parsed correctly", func() {
 			statusFile, err := os.OpenFile(filepath.Join("testdata", "fdbbackup_status_6_2.json"), os.O_RDONLY, os.ModePerm)
@@ -1026,19 +482,32 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 		})
 	})
 
+	coordinators := []ProcessAddress{
+		{
+			IPAddress: net.ParseIP("127.0.0.1"),
+			Port:      4500,
+		},
+		{
+			IPAddress: net.ParseIP("127.0.0.2"),
+			Port:      4500,
+		},
+		{
+			IPAddress: net.ParseIP("127.0.0.3"),
+			Port:      4500,
+		},
+	}
+
 	When("parsing the connection string", func() {
 		It("should be parsed correctly", func() {
 			str, err := ParseConnectionString("test:abcd@127.0.0.1:4500,127.0.0.2:4500,127.0.0.3:4500")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(str.DatabaseName).To(Equal("test"))
 			Expect(str.GenerationID).To(Equal("abcd"))
-			Expect(str.Coordinators).To(Equal([]string{
-				"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500",
-			}))
+			Expect(str.Coordinators).To(Equal(coordinators))
 
 			str, err = ParseConnectionString("test:abcd")
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(Equal("Invalid connection string test:abcd"))
+			Expect(err.Error()).To(Equal("invalid connection string test:abcd"))
 		})
 	})
 
@@ -1047,9 +516,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			str := ConnectionString{
 				DatabaseName: "test",
 				GenerationID: "abcd",
-				Coordinators: []string{
-					"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500",
-				},
+				Coordinators: coordinators,
 			}
 			Expect(str.String()).To(Equal("test:abcd@127.0.0.1:4500,127.0.0.2:4500,127.0.0.3:4500"))
 		})
@@ -1060,9 +527,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			str := ConnectionString{
 				DatabaseName: "test",
 				GenerationID: "abcd",
-				Coordinators: []string{
-					"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500",
-				},
+				Coordinators: coordinators,
 			}
 			err := str.GenerateNewGenerationID()
 			Expect(err).NotTo(HaveOccurred())
@@ -1075,13 +540,26 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			str := ConnectionString{
 				DatabaseName: "test",
 				GenerationID: "abcd",
-				Coordinators: []string{"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500"},
+				Coordinators: coordinators,
 			}
-			Expect(str.HasCoordinators([]string{"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500"})).To(BeTrue())
-			Expect(str.HasCoordinators([]string{"127.0.0.1:4500", "127.0.0.3:4500", "127.0.0.2:4500"})).To(BeTrue())
-			Expect(str.HasCoordinators([]string{"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.3:4500", "127.0.0.4:4500"})).To(BeFalse())
-			Expect(str.HasCoordinators([]string{"127.0.0.1:4500", "127.0.0.2:4500", "127.0.0.4:4500"})).To(BeFalse())
-			Expect(str.HasCoordinators([]string{"127.0.0.1:4500", "127.0.0.2:4500"})).To(BeFalse())
+			Expect(str.HasCoordinators(coordinators)).To(BeTrue())
+			// We have to copy the slice to prevent to modify the original slice
+			// See: https://golang.org/ref/spec#Appending_and_copying_slices
+			newCoord := make([]ProcessAddress, len(coordinators))
+			copy(newCoord, coordinators)
+			rand.Shuffle(len(newCoord), func(i, j int) {
+				newCoord[i], newCoord[j] = newCoord[j], newCoord[i]
+			})
+			Expect(str.HasCoordinators(newCoord)).To(BeTrue())
+			newCoord = make([]ProcessAddress, len(coordinators))
+			copy(newCoord, coordinators)
+			newCoord = append(newCoord, ProcessAddress{IPAddress: net.ParseIP("127.0.0.4"), Port: 4500})
+			Expect(str.HasCoordinators(newCoord)).To(BeFalse())
+			newCoord = make([]ProcessAddress, len(coordinators))
+			copy(newCoord, coordinators)
+			newCoord = append(newCoord[:2], ProcessAddress{IPAddress: net.ParseIP("127.0.0.4"), Port: 4500})
+			Expect(str.HasCoordinators(newCoord)).To(BeFalse())
+			Expect(str.HasCoordinators(newCoord[:2])).To(BeFalse())
 		})
 	})
 
@@ -1186,33 +664,6 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			}
 
 			Expect(cluster.GetFullSidecarVersion(false)).To(Equal("6.2.15-2"))
-		})
-	})
-
-	Context("Using the fdb version", func() {
-		It("should return the fdb version struct", func() {
-			version, err := ParseFdbVersion("6.2.11")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(version).To(Equal(FdbVersion{Major: 6, Minor: 2, Patch: 11}))
-
-			_, err = ParseFdbVersion("6.2")
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(Equal("could not parse FDB version from 6.2"))
-		})
-
-		It("should format the version correctly", func() {
-			version := FdbVersion{Major: 6, Minor: 2, Patch: 11}
-			Expect(version.String()).To(Equal("6.2.11"))
-		})
-
-		It("should validate the flags for the version correct", func() {
-			version := FdbVersion{Major: 6, Minor: 2, Patch: 0}
-			Expect(version.HasInstanceIDInSidecarSubstitutions()).To(BeFalse())
-			Expect(version.PrefersCommandLineArgumentsInSidecar()).To(BeFalse())
-
-			version = FdbVersion{Major: 7, Minor: 0, Patch: 0}
-			Expect(version.HasInstanceIDInSidecarSubstitutions()).To(BeTrue())
-			Expect(version.PrefersCommandLineArgumentsInSidecar()).To(BeTrue())
 		})
 	})
 
@@ -2805,7 +2256,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			address, err := ParseProcessAddress("127.0.0.1:4500:tls")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(address).To(Equal(ProcessAddress{
-				IPAddress: "127.0.0.1",
+				IPAddress: net.ParseIP("127.0.0.1"),
 				Port:      4500,
 				Flags:     map[string]bool{"tls": true},
 			}))
@@ -2814,10 +2265,18 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			address, err = ParseProcessAddress("127.0.0.1:4501")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(address).To(Equal(ProcessAddress{
-				IPAddress: "127.0.0.1",
+				IPAddress: net.ParseIP("127.0.0.1"),
 				Port:      4501,
 			}))
 			Expect(address.String()).To(Equal("127.0.0.1:4501"))
+
+			address, err = ParseProcessAddress("[::1]:4501")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(address).To(Equal(ProcessAddress{
+				IPAddress: net.ParseIP("::1"),
+				Port:      4501,
+			}))
+			Expect(address.String()).To(Equal("[::1]:4501"))
 
 			address, err = ParseProcessAddress("127.0.0.1:bad")
 			Expect(err).To(HaveOccurred())
@@ -2924,7 +2383,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster := createCluster()
 
-			result, err := cluster.CheckReconciliation()
+			result, err := cluster.CheckReconciliation(log)
 			Expect(result).To(BeTrue())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2933,7 +2392,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.Configured = false
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2943,7 +2402,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.ProcessGroups = append(cluster.Status.ProcessGroups, &ProcessGroupStatus{ProcessGroupID: "storage-5", ProcessClass: "storage"})
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2953,7 +2412,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.ProcessGroups = cluster.Status.ProcessGroups[1:]
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2963,7 +2422,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.Health.Available = false
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2973,7 +2432,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Spec.DatabaseConfiguration.StorageEngine = "ssd-1"
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2983,7 +2442,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.HasIncorrectConfigMap = true
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -2993,7 +2452,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.RequiredAddresses.TLS = true
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3004,7 +2463,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			cluster = createCluster()
 			cluster.Spec.ProcessCounts.Storage = 2
 			cluster.Status.ProcessGroups[0].Remove = true
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3015,8 +2474,8 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			cluster = createCluster()
 			cluster.Spec.ProcessCounts.Storage = 2
 			cluster.Status.ProcessGroups[0].Remove = true
-			cluster.Status.ProcessGroups[0].Excluded = true
-			result, err = cluster.CheckReconciliation()
+			cluster.Status.ProcessGroups[0].UpdateCondition(ResourcesTerminating, true, nil, "")
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeTrue())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3029,7 +2488,8 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			cluster.Status.ProcessGroups[0].Remove = true
 			cluster.Status.ProcessGroups[0].Excluded = true
 			cluster.Status.ProcessGroups[0].UpdateCondition(IncorrectCommandLine, true, nil, "")
-			result, err = cluster.CheckReconciliation()
+			cluster.Status.ProcessGroups[0].UpdateCondition(ResourcesTerminating, true, nil, "")
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeTrue())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3039,7 +2499,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.HasIncorrectServiceConfig = true
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3049,7 +2509,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.NeedsNewCoordinators = true
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3059,7 +2519,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Status.ProcessGroups[0].UpdateCondition(IncorrectCommandLine, true, nil, "")
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3069,7 +2529,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Spec.LockOptions.DenyList = append(cluster.Spec.LockOptions.DenyList, LockDenyListEntry{ID: "dc1"})
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3080,7 +2540,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			cluster = createCluster()
 			cluster.Spec.LockOptions.DenyList = append(cluster.Spec.LockOptions.DenyList, LockDenyListEntry{ID: "dc1"})
 			cluster.Status.Locks.DenyList = []string{"dc1", "dc2"}
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeTrue())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3090,7 +2550,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			cluster = createCluster()
 			cluster.Spec.LockOptions.DenyList = append(cluster.Spec.LockOptions.DenyList, LockDenyListEntry{ID: "dc1", Allow: true})
 			cluster.Status.Locks.DenyList = []string{"dc1", "dc2"}
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeFalse())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3100,7 +2560,7 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 
 			cluster = createCluster()
 			cluster.Spec.LockOptions.DenyList = append(cluster.Spec.LockOptions.DenyList, LockDenyListEntry{ID: "dc1", Allow: true})
-			result, err = cluster.CheckReconciliation()
+			result, err = cluster.CheckReconciliation(log)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeTrue())
 			Expect(cluster.Status.Generations).To(Equal(ClusterGenerationStatus{
@@ -3142,17 +2602,6 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 			settings := cluster.GetProcessSettings(ProcessClassStorage)
 			Expect(settings.PodTemplate.ObjectMeta.Labels).To(Equal(map[string]string{"test-label": "label2"}))
 			Expect(settings.CustomParameters).To(Equal(&[]string{"test_knob=value1"}))
-		})
-	})
-
-	When("checking if the protocol and the version are compatible", func() {
-		It("should return the correct compatibility", func() {
-			version := FdbVersion{Major: 6, Minor: 2, Patch: 20}
-			Expect(version.IsProtocolCompatible(FdbVersion{Major: 6, Minor: 2, Patch: 20})).To(BeTrue())
-			Expect(version.IsProtocolCompatible(FdbVersion{Major: 6, Minor: 2, Patch: 22})).To(BeTrue())
-			Expect(version.IsProtocolCompatible(FdbVersion{Major: 6, Minor: 3, Patch: 0})).To(BeFalse())
-			Expect(version.IsProtocolCompatible(FdbVersion{Major: 6, Minor: 3, Patch: 20})).To(BeFalse())
-			Expect(version.IsProtocolCompatible(FdbVersion{Major: 7, Minor: 2, Patch: 20})).To(BeFalse())
 		})
 	})
 
@@ -3281,6 +2730,275 @@ var _ = Describe("[api] FoundationDBCluster", func() {
 					ValuesToAdd:                   []int{1, 2},
 					ExpectedLen:                   2,
 					ExpectedStorageServersPerDisk: []int{1, 2},
+				}),
+		)
+	})
+
+	When("adding addresses to a process group", func() {
+		type testCase struct {
+			initialProcessGroup  ProcessGroupStatus
+			inputAddresses       []string
+			expectedProcessGroup ProcessGroupStatus
+		}
+
+		DescribeTable("should add or ignore the addresses",
+			func(tc testCase) {
+				tc.initialProcessGroup.AddAddresses(tc.inputAddresses)
+				Expect(tc.expectedProcessGroup).To(Equal(tc.initialProcessGroup))
+
+			},
+			Entry("Empty input address",
+
+				testCase{
+					initialProcessGroup: ProcessGroupStatus{Addresses: []string{
+						"1.1.1.1",
+					}},
+					inputAddresses: nil,
+					expectedProcessGroup: ProcessGroupStatus{Addresses: []string{
+						"1.1.1.1",
+					}},
+				}),
+			Entry("New Pod IP",
+				testCase{
+					initialProcessGroup: ProcessGroupStatus{Addresses: []string{
+						"1.1.1.1",
+					}},
+					inputAddresses: []string{
+						"2.2.2.2",
+					},
+					expectedProcessGroup: ProcessGroupStatus{Addresses: []string{
+						"2.2.2.2",
+					}},
+				}),
+			Entry("New Pod IP and process group is marked for removal",
+				testCase{
+					initialProcessGroup: ProcessGroupStatus{
+						Addresses: []string{
+							"1.1.1.1",
+						},
+						Remove: true},
+					inputAddresses: []string{
+						"2.2.2.2",
+					},
+					expectedProcessGroup: ProcessGroupStatus{Addresses: []string{
+						"1.1.1.1",
+						"2.2.2.2",
+					}, Remove: true},
+				}),
+		)
+	})
+
+	When("parsing the addresses from the process commandline", func() {
+		type testCase struct {
+			cmdline  string
+			expected []ProcessAddress
+		}
+
+		DescribeTable("should add or ignore the addresses",
+			func(tc testCase) {
+				res, err := ParseProcessAddressesFromCmdline(tc.cmdline)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(res)).To(BeNumerically("==", len(tc.expected)))
+				Expect(res).To(Equal(tc.expected))
+			},
+			Entry("Only no-tls",
+				testCase{
+					cmdline: "/usr/bin/fdbserver --class=stateless --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --locality_instance_id=stateless-9 --locality_machineid=machine1 --locality_zoneid=zone1 --logdir=/var/log/fdb-trace-logs --loggroup=test --public_address=1.2.3.4:4501 --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
+					expected: []ProcessAddress{
+						{
+							IPAddress: net.ParseIP("1.2.3.4"),
+							Port:      4501,
+						},
+					},
+				}),
+			Entry("Only TLS",
+				testCase{
+					cmdline: "/usr/bin/fdbserver --class=stateless --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --locality_instance_id=stateless-9 --locality_machineid=machine1 --locality_zoneid=zone1 --logdir=/var/log/fdb-trace-logs --loggroup=test --public_address=1.2.3.4:4500:tls --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
+					expected: []ProcessAddress{
+						{
+							IPAddress: net.ParseIP("1.2.3.4"),
+							Port:      4500,
+							Flags:     map[string]bool{"tls": true},
+						},
+					},
+				}),
+			Entry("TLS IPv6",
+				testCase{
+					cmdline: "/usr/bin/fdbserver --class=stateless --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --locality_instance_id=stateless-9 --locality_machineid=machine1 --locality_zoneid=zone1 --logdir=/var/log/fdb-trace-logs --loggroup=test --public_address=[::1]:4500:tls --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
+					expected: []ProcessAddress{
+						{
+							IPAddress: net.ParseIP("::1"),
+							Port:      4500,
+							Flags: map[string]bool{
+								"tls": true,
+							},
+						},
+					},
+				}),
+			Entry("TLS and no-TLS",
+				testCase{
+					cmdline: "/usr/bin/fdbserver --class=stateless --cluster_file=/var/fdb/data/fdb.cluster --datadir=/var/fdb/data --locality_instance_id=stateless-9 --locality_machineid=machine1 --locality_zoneid=zone1 --logdir=/var/log/fdb-trace-logs --loggroup=test --public_address=1.2.3.4:4501,1.2.3.4:4500:tls --seed_cluster_file=/var/dynamic-conf/fdb.cluster",
+					expected: []ProcessAddress{
+						{
+							IPAddress: net.ParseIP("1.2.3.4"),
+							Port:      4501,
+						},
+						{
+							IPAddress: net.ParseIP("1.2.3.4"),
+							Port:      4500,
+							Flags: map[string]bool{
+								"tls": true,
+							},
+						},
+					},
+				}),
+		)
+	})
+
+	When("checking if a process is eligible as coordinator candidate", func() {
+		type testCase struct {
+			cluster  *FoundationDBCluster
+			pClass   ProcessClass
+			expected bool
+		}
+
+		DescribeTable("should return if the process class is eligible",
+			func(tc testCase) {
+				Expect(tc.cluster.IsEligibleAsCandidate(tc.pClass)).To(Equal(tc.expected))
+			},
+			Entry("storage class without any configuration is eligible",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassStorage,
+					expected: true,
+				}),
+			Entry("log class without any configuration is eligible",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassLog,
+					expected: true,
+				}),
+			Entry("transaction class without any configuration is eligible",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassTransaction,
+					expected: true,
+				}),
+			Entry("stateless class without any configuration is not eligible",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassStateless,
+					expected: false,
+				}),
+			Entry("cluster controller class without any configuration is not eligible",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassClusterController,
+					expected: false,
+				}),
+			Entry("storage class with only storage classes is eligible",
+				testCase{
+					cluster: &FoundationDBCluster{
+						Spec: FoundationDBClusterSpec{
+							CoordinatorSelection: []CoordinatorSelectionSetting{
+								{
+									ProcessClass: ProcessClassStorage,
+									Priority:     1,
+								},
+							},
+						},
+					},
+					pClass:   ProcessClassStorage,
+					expected: true,
+				}),
+			Entry("log class with only storage classes is not eligible",
+				testCase{
+					cluster: &FoundationDBCluster{
+						Spec: FoundationDBClusterSpec{
+							CoordinatorSelection: []CoordinatorSelectionSetting{
+								{
+									ProcessClass: ProcessClassStorage,
+									Priority:     1,
+								},
+							},
+						},
+					},
+					pClass:   ProcessClassLog,
+					expected: false,
+				}),
+		)
+	})
+
+	When("getting the priority of a process class", func() {
+		type testCase struct {
+			cluster  *FoundationDBCluster
+			pClass   ProcessClass
+			expected int
+		}
+
+		DescribeTable("should return the expected process class",
+			func(tc testCase) {
+				Expect(tc.cluster.GetClassCandidatePriority(tc.pClass)).To(Equal(tc.expected))
+			},
+			Entry("storage class without any configuration returns highest priority",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassStorage,
+					expected: math.MinInt64,
+				}),
+			Entry("log class without any configuration highest prioritye",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassLog,
+					expected: math.MinInt64,
+				}),
+			Entry("transaction class without any configuration highest priority",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassTransaction,
+					expected: math.MinInt64,
+				}),
+			Entry("stateless class without any configuration highest priority",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassStateless,
+					expected: math.MinInt64,
+				}),
+			Entry("cluster controller class without any configuration highest priority",
+				testCase{
+					cluster:  &FoundationDBCluster{},
+					pClass:   ProcessClassClusterController,
+					expected: math.MinInt64,
+				}),
+			Entry("storage class with only storage classes returns 1 as priority",
+				testCase{
+					cluster: &FoundationDBCluster{
+						Spec: FoundationDBClusterSpec{
+							CoordinatorSelection: []CoordinatorSelectionSetting{
+								{
+									ProcessClass: ProcessClassStorage,
+									Priority:     1,
+								},
+							},
+						},
+					},
+					pClass:   ProcessClassStorage,
+					expected: 1,
+				}),
+			Entry("log class with only storage classes returns highest priority",
+				testCase{
+					cluster: &FoundationDBCluster{
+						Spec: FoundationDBClusterSpec{
+							CoordinatorSelection: []CoordinatorSelectionSetting{
+								{
+									ProcessClass: ProcessClassStorage,
+									Priority:     1,
+								},
+							},
+						},
+					},
+					pClass:   ProcessClassLog,
+					expected: math.MinInt64,
 				}),
 		)
 	})

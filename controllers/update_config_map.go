@@ -3,7 +3,7 @@
  *
  * This source file is part of the FoundationDB open source project
  *
- * Copyright 2019 Apple Inc. and the FoundationDB project authors
+ * Copyright 2019-2021 Apple Inc. and the FoundationDB project authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,9 +22,7 @@ package controllers
 
 import (
 	ctx "context"
-	"fmt"
 	"reflect"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 
@@ -34,24 +32,27 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// UpdateConfigMap provides a reconciliation step for updating the dynamic conf
+// UpdateConfigMap provides a reconciliation step for updating the dynamic config
 // for a cluster.
 type UpdateConfigMap struct{}
 
 // Reconcile runs the reconciler's work.
-func (u UpdateConfigMap) Reconcile(r *FoundationDBClusterReconciler, context ctx.Context, cluster *fdbtypes.FoundationDBCluster) (bool, error) {
+func (u UpdateConfigMap) Reconcile(r *FoundationDBClusterReconciler, context ctx.Context, cluster *fdbtypes.FoundationDBCluster) *Requeue {
 	configMap, err := GetConfigMap(cluster)
 	if err != nil {
-		return false, err
+		return &Requeue{Error: err}
 	}
 	existing := &corev1.ConfigMap{}
 	err = r.Get(context, types.NamespacedName{Namespace: configMap.Namespace, Name: configMap.Name}, existing)
 	if err != nil && k8serrors.IsNotFound(err) {
 		log.Info("Creating config map", "namespace", configMap.Namespace, "cluster", cluster.Name, "name", configMap.Name)
 		err = r.Create(context, configMap)
-		return err == nil, err
+		if err != nil {
+			return &Requeue{Error: err}
+		}
+		return nil
 	} else if err != nil {
-		return false, err
+		return &Requeue{Error: err}
 	}
 
 	metadataCorrect := true
@@ -70,60 +71,9 @@ func (u UpdateConfigMap) Reconcile(r *FoundationDBClusterReconciler, context ctx
 		existing.Data = configMap.Data
 		err = r.Update(context, existing)
 		if err != nil {
-			return false, err
+			return &Requeue{Error: err}
 		}
 	}
 
-	configMapHash, err := GetDynamicConfHash(configMap)
-	if err != nil {
-		return false, err
-	}
-
-	instances, err := r.PodLifecycleManager.GetInstances(r, cluster, context, getPodListOptions(cluster, "", "")...)
-	if err != nil {
-		return false, err
-	}
-
-	var errs []error
-	// We try to update all instances and if we observe an error we add it to the error list.
-	// TODO: should we try to update the instances concurrently?
-	for index := range instances {
-		instance := instances[index]
-		if instance.Metadata.Annotations[LastConfigMapKey] == configMapHash {
-			continue
-		}
-
-		synced, err := r.updatePodDynamicConf(cluster, instance)
-		if !synced {
-			log.Info("Update dynamic Pod config", "namespace", configMap.Namespace, "cluster", cluster.Name, "processGroupID", instance.GetInstanceID(), "synced", synced)
-			if err != nil {
-				errs = append(errs, err)
-			} else {
-				errs = append(errs, fmt.Errorf("processGroupID %s not synced", instance.GetInstanceID()))
-			}
-
-			continue
-		}
-
-		instance.Metadata.Annotations[LastConfigMapKey] = configMapHash
-		err = r.PodLifecycleManager.UpdateMetadata(r, context, cluster, instance)
-		if err != nil {
-			log.Info("Update Pod metadata", "namespace", configMap.Namespace, "cluster", cluster.Name, "processGroupID", instance.GetInstanceID(), "error", err)
-			errs = append(errs, err)
-		}
-	}
-
-	if len(errs) > 0 {
-		// If we return an error we don't requeue
-		// So we just return that we can't continue but don't have an error
-		return false, nil
-	}
-
-	return true, nil
-}
-
-// RequeueAfter returns the delay before we should run the reconciliation
-// again.
-func (u UpdateConfigMap) RequeueAfter() time.Duration {
-	return 30 * time.Second
+	return nil
 }

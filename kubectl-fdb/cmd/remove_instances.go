@@ -24,11 +24,12 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/FoundationDB/fdb-kubernetes-operator/internal"
+
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	"github.com/FoundationDB/fdb-kubernetes-operator/controllers"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/spf13/cobra"
@@ -41,7 +42,7 @@ import (
 	fdbtypes "github.com/FoundationDB/fdb-kubernetes-operator/api/v1beta1"
 )
 
-func newRemoveInstancesCmd(streams genericclioptions.IOStreams, rootCmd *cobra.Command) *cobra.Command {
+func newRemoveInstancesCmd(streams genericclioptions.IOStreams) *cobra.Command {
 	o := NewFDBOptions(streams)
 
 	cmd := &cobra.Command{
@@ -49,7 +50,7 @@ func newRemoveInstancesCmd(streams genericclioptions.IOStreams, rootCmd *cobra.C
 		Short: "Adds an instance (or multiple) to the remove list of the given cluster",
 		Long:  "Adds an instance (or multiple) to the remove list field of the given cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			force, err := rootCmd.Flags().GetBool("force")
+			force, err := cmd.Root().Flags().GetBool("force")
 			if err != nil {
 				return err
 			}
@@ -145,7 +146,11 @@ func getInstanceIDsFromPod(kubeClient client.Client, clusterName string, podName
 		podNameMap[instance] = true
 	}
 
-	pods, err := getPodsForCluster(kubeClient, clusterName, namespace)
+	cluster, err := loadCluster(kubeClient, namespace, clusterName)
+	if err != nil {
+		return instances, err
+	}
+	pods, err := getPodsForCluster(kubeClient, cluster, namespace)
 	if err != nil {
 		return instances, err
 	}
@@ -155,7 +160,7 @@ func getInstanceIDsFromPod(kubeClient client.Client, clusterName string, podName
 			continue
 		}
 
-		instances = append(instances, pod.Labels[controllers.FDBInstanceIDLabel])
+		instances = append(instances, pod.Labels[fdbtypes.FDBInstanceIDLabel])
 	}
 
 	return instances, nil
@@ -163,11 +168,7 @@ func getInstanceIDsFromPod(kubeClient client.Client, clusterName string, podName
 
 // removeInstances adds instances to the instancesToRemove field
 func removeInstances(kubeClient client.Client, clusterName string, instances []string, namespace string, withExclusion bool, withShrink bool, force bool, removeAllFailed bool) error {
-	var cluster fdbtypes.FoundationDBCluster
-	err := kubeClient.Get(ctx.Background(), client.ObjectKey{
-		Namespace: namespace,
-		Name:      clusterName,
-	}, &cluster)
+	cluster, err := loadCluster(kubeClient, namespace, clusterName)
 
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -186,16 +187,14 @@ func removeInstances(kubeClient client.Client, clusterName string, instances []s
 		var pods corev1.PodList
 		err := kubeClient.List(ctx.Background(), &pods,
 			client.InNamespace(namespace),
-			client.MatchingLabels(map[string]string{
-				controllers.FDBClusterLabel: clusterName,
-			}))
-
+			client.MatchingLabels(cluster.Spec.LabelConfig.MatchLabels),
+		)
 		if err != nil {
 			return err
 		}
 
 		for _, pod := range pods.Items {
-			class := controllers.GetProcessClassFromMeta(pod.ObjectMeta)
+			class := internal.GetProcessClassFromMeta(pod.ObjectMeta)
 			shrinkMap[class]++
 		}
 	}
@@ -228,5 +227,5 @@ func removeInstances(kubeClient client.Client, clusterName string, instances []s
 		cluster.Spec.InstancesToRemoveWithoutExclusion = append(cluster.Spec.InstancesToRemoveWithoutExclusion, instances...)
 	}
 
-	return kubeClient.Patch(ctx.TODO(), &cluster, patch)
+	return kubeClient.Patch(ctx.TODO(), cluster, patch)
 }

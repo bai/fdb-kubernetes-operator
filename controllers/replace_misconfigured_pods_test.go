@@ -23,6 +23,8 @@ package controllers
 import (
 	"fmt"
 
+	"github.com/FoundationDB/fdb-kubernetes-operator/internal"
+
 	fdbtypes "github.com/FoundationDB/fdb-kubernetes-operator/api/v1beta1"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -62,7 +64,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				instance := FdbInstance{
 					Metadata: &metav1.ObjectMeta{
 						Labels: map[string]string{
-							FDBInstanceIDLabel: instanceName,
+							fdbtypes.FDBInstanceIDLabel: instanceName,
 						},
 					},
 					Pod: &corev1.Pod{
@@ -83,7 +85,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				instance := FdbInstance{
 					Metadata: &metav1.ObjectMeta{
 						Labels: map[string]string{
-							FDBInstanceIDLabel: instanceName,
+							fdbtypes.FDBInstanceIDLabel: instanceName,
 						},
 					},
 					Pod: &corev1.Pod{
@@ -107,8 +109,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				instance := FdbInstance{
 					Metadata: &metav1.ObjectMeta{
 						Labels: map[string]string{
-							FDBInstanceIDLabel:   instanceName,
-							FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+							fdbtypes.FDBInstanceIDLabel:   instanceName,
+							fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 						},
 					},
 					Pod: &corev1.Pod{
@@ -138,8 +140,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				instance := FdbInstance{
 					Metadata: &metav1.ObjectMeta{
 						Labels: map[string]string{
-							FDBInstanceIDLabel:   instanceName,
-							FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+							fdbtypes.FDBInstanceIDLabel:   instanceName,
+							fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 						},
 						Annotations: map[string]string{},
 					},
@@ -158,7 +160,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				ipSource := fdbtypes.PublicIPSourceService
-				cluster.Spec.Services.PublicIPSource = &ipSource
+				cluster.Spec.Routing.PublicIPSource = &ipSource
 				needsRemoval, err = instanceNeedsRemoval(cluster, instance, status)
 				Expect(needsRemoval).To(BeTrue())
 				Expect(err).NotTo(HaveOccurred())
@@ -171,11 +173,11 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{
-						PublicIPSourceAnnotation: string(fdbtypes.PublicIPSourceService),
+						fdbtypes.PublicIPSourceAnnotation: string(fdbtypes.PublicIPSourceService),
 					},
 				},
 				Pod: &corev1.Pod{
@@ -189,13 +191,13 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				Remove:         false,
 			}
 			ipSource := fdbtypes.PublicIPSourceService
-			cluster.Spec.Services.PublicIPSource = &ipSource
+			cluster.Spec.Routing.PublicIPSource = &ipSource
 
 			needsRemoval, err := instanceNeedsRemoval(cluster, instance, status)
 			Expect(needsRemoval).To(BeFalse())
 			Expect(err).NotTo(HaveOccurred())
 
-			cluster.Spec.Services.PublicIPSource = nil
+			cluster.Spec.Routing.PublicIPSource = nil
 			needsRemoval, err = instanceNeedsRemoval(cluster, instance, status)
 			Expect(needsRemoval).To(BeTrue())
 			Expect(err).NotTo(HaveOccurred())
@@ -207,8 +209,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},
@@ -227,7 +229,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			ipSource := fdbtypes.PublicIPSourcePod
-			cluster.Spec.Services.PublicIPSource = &ipSource
+			cluster.Spec.Routing.PublicIPSource = &ipSource
 			needsRemoval, err = instanceNeedsRemoval(cluster, instance, status)
 			Expect(needsRemoval).To(BeFalse())
 			Expect(err).NotTo(HaveOccurred())
@@ -239,8 +241,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},
@@ -270,8 +272,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   fmt.Sprintf("%s-1337", fdbtypes.ProcessClassLog),
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassLog),
+						fdbtypes.FDBInstanceIDLabel:   fmt.Sprintf("%s-1337", fdbtypes.ProcessClassLog),
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassLog),
 					},
 					Annotations: map[string]string{},
 				},
@@ -301,8 +303,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},
@@ -334,8 +336,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},
@@ -360,8 +362,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance := FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   instanceName,
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   instanceName,
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},
@@ -375,7 +377,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 				ProcessGroupID: instanceName,
 				Remove:         false,
 			}
-			err := NormalizeClusterSpec(&cluster.Spec, DeprecationOptions{UseFutureDefaults: true})
+			err := internal.NormalizeClusterSpec(cluster, internal.DeprecationOptions{UseFutureDefaults: true})
 			Expect(err).NotTo(HaveOccurred())
 
 			cluster.Spec.UpdatePodsByReplacement = true
@@ -390,7 +392,7 @@ var _ = Describe("replace_misconfigured_pods", func() {
 		var instance FdbInstance
 
 		BeforeEach(func() {
-			err := NormalizeClusterSpec(&cluster.Spec, DeprecationOptions{UseFutureDefaults: true})
+			err := internal.NormalizeClusterSpec(cluster, internal.DeprecationOptions{UseFutureDefaults: true})
 			Expect(err).NotTo(HaveOccurred())
 			pod, err := GetPod(cluster, fdbtypes.ProcessClassStorage, 0)
 			Expect(err).NotTo(HaveOccurred())
@@ -398,8 +400,8 @@ var _ = Describe("replace_misconfigured_pods", func() {
 			instance = FdbInstance{
 				Metadata: &metav1.ObjectMeta{
 					Labels: map[string]string{
-						FDBInstanceIDLabel:   pod.ObjectMeta.Labels[FDBInstanceIDLabel],
-						FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
+						fdbtypes.FDBInstanceIDLabel:   pod.ObjectMeta.Labels[fdbtypes.FDBInstanceIDLabel],
+						fdbtypes.FDBProcessClassLabel: string(fdbtypes.ProcessClassStorage),
 					},
 					Annotations: map[string]string{},
 				},

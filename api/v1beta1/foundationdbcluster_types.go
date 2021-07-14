@@ -20,13 +20,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
 	"math/rand"
+	"net"
 	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/equality"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,7 +42,7 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Generation",type="integer",JSONPath=".metadata.generation",description="Latest generation of the spec",priority=0
 // +kubebuilder:printcolumn:name="Reconciled",type="integer",JSONPath=".status.generations.reconciled",description="Last reconciled generation of the spec",priority=0
-// +kubebuilder:printcolumn:name="Healthy",type="boolean",JSONPath=".status.health.healthy",description="Database health",priority=0
+// +kubebuilder:printcolumn:name="Available",type="boolean",JSONPath=".status.health.available",description="Database available",priority=0
 // +kubebuilder:printcolumn:name="Version",type="string",JSONPath=".status.runningVersion",description="Running version",priority=0
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
@@ -70,7 +75,7 @@ func init() {
 // FoundationDBClusterSpec defines the desired state of a cluster.
 type FoundationDBClusterSpec struct {
 	// Version defines the version of FoundationDB the cluster should run.
-	// +kubebuilder:validation:Pattern:=^(\d+)\.(\d+)\.(\d+)$
+	// +kubebuilder:validation:Pattern:=(\d+)\.(\d+)\.(\d+)
 	Version string `json:"version"`
 
 	// SidecarVersions defines the build version of the sidecar to run. This
@@ -93,6 +98,14 @@ type FoundationDBClusterSpec struct {
 	//
 	// After the initial reconciliation, this will not be used.
 	SeedConnectionString string `json:"seedConnectionString,omitempty"`
+
+	// PartialConnectionString provides a way to specify part of the
+	// connection string (e.g. the database name and coordinator generation)
+	// without specifying the entire string. This does not allow for setting
+	// the coordinator IPs. If `SeedConnectionString` is set,
+	// `PartialConnectionString` will have no effect. They cannot be used
+	// together.
+	PartialConnectionString ConnectionString `json:"partialConnectionString,omitempty"`
 
 	// FaultDomain defines the rules for what fault domain to replicate across.
 	FaultDomain FoundationDBClusterFaultDomain `json:"faultDomain,omitempty"`
@@ -158,7 +171,11 @@ type FoundationDBClusterSpec struct {
 
 	// Services defines the configuration for services that sit in front of our
 	// pods.
+	// Deprecated: Use Routing instead.
 	Services ServiceConfig `json:"services,omitempty"`
+
+	// Routing defines the configuration for routing to our pods.
+	Routing RoutingConfig `json:"routing,omitempty"`
 
 	// IgnoreUpgradabilityChecks determines whether we should skip the check for
 	// client compatibility when performing an upgrade.
@@ -283,6 +300,22 @@ type FoundationDBClusterSpec struct {
 	// local storage.
 	// +kubebuilder:default:=false
 	ReplaceInstancesWhenResourcesChange *bool `json:"replaceInstancesWhenResourcesChange,omitempty"`
+
+	// Skip defines if the cluster should be skipped for reconciliation. This can be useful for
+	// investigating in issues or if the environment is unstable.
+	// +kubebuilder:default:=false
+	Skip bool `json:"skip,omitempty"`
+
+	// CoordinatorSelection defines which process classes are eligible for coordinator selection.
+	// If empty all stateful processes classes are equally eligible.
+	// A higher priority means that a process class is preferred over another process class.
+	// If the FoundationDB cluster is spans across multiple Kubernetes clusters or DCs the
+	// CoordinatorSelection must match in all FoundationDB cluster resources otherwise
+	// the coordinator selection process could conflict.
+	CoordinatorSelection []CoordinatorSelectionSetting `json:"coordinatorSelection,omitempty"`
+
+	// LabelConfig allows customizing labels used by the operator.
+	LabelConfig LabelConfig `json:"labels,omitempty"`
 }
 
 // FoundationDBClusterStatus defines the observed state of FoundationDBCluster
@@ -415,15 +448,83 @@ func (processGroupStatus *ProcessGroupStatus) NeedsReplacement(failureTime int) 
 	return false, 0
 }
 
+// AddAddresses adds the new address to the ProcessGroupStatus and removes duplicates and old addresses
+// if the process group is not marked as removal.
+func (processGroupStatus *ProcessGroupStatus) AddAddresses(addresses []string) {
+	newAddresses := make([]string, 0, len(addresses))
+	// Currently this only contains one address but might include in the future multiple addresses
+	// e.g. for dual stack
+	for _, addr := range addresses {
+		// empty address in the address list that means the Pod has no IP address assigned
+		if addr == "" {
+			continue
+		}
+
+		newAddresses = append(newAddresses, addr)
+	}
+
+	// If the newAddresses contains at least one IP address use this list as the new addresses
+	// and return
+	if len(newAddresses) > 0 && !processGroupStatus.Remove {
+		processGroupStatus.Addresses = newAddresses
+		return
+	}
+
+	// The process group is marked for removal so we want to track all addresses during that removal
+	// to ensure we exclude and include all addresses during the removal process.
+	if processGroupStatus.Remove {
+		processGroupStatus.Addresses = cleanAddressList(append(processGroupStatus.Addresses, newAddresses...))
+		return
+	}
+}
+
+// This method removes duplicates and empty strings from a list of addresses.
+func cleanAddressList(addresses []string) []string {
+	result := make([]string, 0, len(addresses))
+	resultMap := make(map[string]bool)
+
+	for _, value := range addresses {
+		if value != "" && !resultMap[value] {
+			result = append(result, value)
+			resultMap[value] = true
+		}
+	}
+
+	return result
+}
+
+// IsExcluded checks if the process group is excluded or if there are still addresses included in the remainingMap.
+// This will return true if the process group skips exclusion or has no remaining addresses.
+func (processGroupStatus *ProcessGroupStatus) IsExcluded(remainingMap map[string]bool) (bool, error) {
+	if processGroupStatus.ExclusionSkipped {
+		return true, nil
+	}
+
+	for _, address := range processGroupStatus.Addresses {
+		isRemaining, isPresent := remainingMap[address]
+		if !isPresent || isRemaining {
+			return false, fmt.Errorf("process has missing address in exclusion results: %s", address)
+		}
+	}
+
+	return true, nil
+}
+
 // NewProcessGroupStatus returns a new GroupStatus for the given processGroupID and processClass.
 func NewProcessGroupStatus(processGroupID string, processClass ProcessClass, addresses []string) *ProcessGroupStatus {
 	return &ProcessGroupStatus{
-		ProcessGroupID:         processGroupID,
-		ProcessClass:           processClass,
-		Addresses:              addresses,
-		Remove:                 false,
-		Excluded:               false,
-		ProcessGroupConditions: make([]*ProcessGroupCondition, 0),
+		ProcessGroupID: processGroupID,
+		ProcessClass:   processClass,
+		Addresses:      addresses,
+		Remove:         false,
+		Excluded:       false,
+		ProcessGroupConditions: []*ProcessGroupCondition{
+			NewProcessGroupCondition(MissingProcesses),
+			NewProcessGroupCondition(MissingPod),
+			NewProcessGroupCondition(MissingPVC),
+			// TODO(johscheuer): currently we never set this condition
+			// NewProcessGroupCondition(MissingService),
+		},
 	}
 }
 
@@ -639,7 +740,27 @@ const (
 	MissingService ProcessGroupConditionType = "MissingService"
 	// MissingProcesses represents a process group that misses a process.
 	MissingProcesses ProcessGroupConditionType = "MissingProcesses"
+	// ResourcesTerminating represents a process group whose resources are being
+	// terminated.
+	ResourcesTerminating ProcessGroupConditionType = "ResourcesTerminating"
+	// ReadyCondition is currently only used in the metrics.
+	ReadyCondition ProcessGroupConditionType = "Ready"
 )
+
+// AllProcessGroupConditionTypes returns all ProcessGroupConditionType
+func AllProcessGroupConditionTypes() []ProcessGroupConditionType {
+	return []ProcessGroupConditionType{
+		IncorrectPodSpec,
+		IncorrectConfigMap,
+		IncorrectCommandLine,
+		PodFailing,
+		MissingPod,
+		MissingPVC,
+		MissingService,
+		MissingProcesses,
+		ReadyCondition,
+	}
+}
 
 // GetProcessGroupConditionType returns the ProcessGroupConditionType for the matching string or an error
 func GetProcessGroupConditionType(processGroupConditionType string) (ProcessGroupConditionType, error) {
@@ -826,28 +947,27 @@ func (flags VersionFlags) Map() map[string]int {
 // GetProcessCountsWithDefaults for more information on the rules for inferring
 // process counts.
 type ProcessCounts struct {
-	// Storage defines the number of storage class processes.
-	Storage int `json:"storage,omitempty"`
-
-	// Transaction defines the number of transaction class processes.
-	Transaction int `json:"transaction,omitempty"`
-
-	// Stateless defines the number of stateless class processes.
-	Stateless int `json:"stateless,omitempty"`
-
-	// Resolution defines the number of resolution class processes.
-	Resolution        int `json:"resolution,omitempty"`
 	Unset             int `json:"unset,omitempty"`
-	Log               int `json:"log,omitempty"`
-	Master            int `json:"master,omitempty"`
-	ClusterController int `json:"cluster_controller,omitempty"`
+	Storage           int `json:"storage,omitempty"`
+	Transaction       int `json:"transaction,omitempty"`
+	Resolution        int `json:"resolution,omitempty"`
+	Tester            int `json:"tester,omitempty"`
 	Proxy             int `json:"proxy,omitempty"`
-	Resolver          int `json:"resolver,omitempty"`
-	Router            int `json:"router,omitempty"`
-	Ratekeeper        int `json:"ratekeeper,omitempty"`
-	DataDistributor   int `json:"data_distributor,omitempty"`
+	Master            int `json:"master,omitempty"`
+	Stateless         int `json:"stateless,omitempty"`
+	Log               int `json:"log,omitempty"`
+	ClusterController int `json:"cluster_controller,omitempty"`
+	LogRouter         int `json:"router,omitempty"`
 	FastRestore       int `json:"fast_restore,omitempty"`
+	DataDistributor   int `json:"data_distributor,omitempty"`
+	Coordinator       int `json:"coordinator,omitempty"`
+	Ratekeeper        int `json:"ratekeeper,omitempty"`
+	StorageCache      int `json:"storage_cache,omitempty"`
 	BackupWorker      int `json:"backup,omitempty"`
+
+	// Deprecated: This is unsupported and any processes with this process class
+	// will fail to start.
+	Resolver int `json:"resolver,omitempty"`
 }
 
 // Map returns a map from process classes to the number of processes with that
@@ -961,6 +1081,16 @@ type AutomaticReplacementOptions struct {
 	// failed or missing before it is automatically replaced.
 	// The default is 1800 seconds, or 30 minutes.
 	FailureDetectionTimeSeconds *int `json:"failureDetectionTimeSeconds,omitempty"`
+
+	// MaxConcurrentReplacements controls how many automatic replacements are allowed to take part.
+	// This will take the list of current replacements and then calculate the difference between
+	// maxConcurrentReplacements and the size of the list. e.g. if currently 3 replacements are
+	// queued (e.g. in the instancesToRemove list) and maxConcurrentReplacements is 5 the operator
+	// is allowed to replace at most 2 process groups. Setting this to 0 will basically disable the automatic
+	// replacements.
+	// +kubebuilder:default:=1
+	// +kubebuilder:validation:Minimum=0
+	MaxConcurrentReplacements *int `json:"maxConcurrentReplacements,omitempty"`
 }
 
 // ProcessSettings defines process-level settings.
@@ -1025,6 +1155,7 @@ func (cluster *FoundationDBCluster) GetProcessSettings(processClass ProcessClass
 			merged.AllowTagOverride = entry.AllowTagOverride
 		}
 	}
+
 	return merged
 }
 
@@ -1237,12 +1368,14 @@ func (cluster *FoundationDBCluster) DesiredCoordinatorCount() int {
 	if cluster.Spec.UsableRegions > 1 {
 		return 9
 	}
+
 	return cluster.MinimumFaultDomains() + cluster.DesiredFaultTolerance()
 }
 
 // CheckReconciliation compares the spec and the status to determine if
 // reconciliation is complete.
-func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
+func (cluster *FoundationDBCluster) CheckReconciliation(log logr.Logger) (bool, error) {
+	logger := log.WithValues("method", "CheckReconciliation", "namespace", cluster.Namespace, "cluster", cluster.Name)
 	var reconciled = true
 	if !cluster.Status.Configured {
 		cluster.Status.Generations.NeedsConfigurationChange = cluster.ObjectMeta.Generation
@@ -1252,11 +1385,17 @@ func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
 	cluster.Status.Generations = ClusterGenerationStatus{Reconciled: cluster.Status.Generations.Reconciled}
 
 	for _, processGroup := range cluster.Status.ProcessGroups {
-		if processGroup.Remove && !processGroup.Excluded {
+		if !processGroup.Remove {
+			continue
+		}
+
+		if processGroup.GetConditionTime(ResourcesTerminating) != nil {
+			logger.Info("Has process group pending to remove", "processGroup", processGroup.ProcessGroupID, "state", "HasPendingRemoval")
+			cluster.Status.Generations.HasPendingRemoval = cluster.ObjectMeta.Generation
+		} else {
+			logger.Info("Has process group with pending shrink", "processGroup", processGroup.ProcessGroupID, "state", "NeedsShrink")
 			cluster.Status.Generations.NeedsShrink = cluster.ObjectMeta.Generation
 			reconciled = false
-		} else if processGroup.Remove {
-			cluster.Status.Generations.HasPendingRemoval = cluster.ObjectMeta.Generation
 		}
 	}
 
@@ -1281,33 +1420,39 @@ func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
 
 	for _, processGroup := range cluster.Status.ProcessGroups {
 		if len(processGroup.ProcessGroupConditions) > 0 && !processGroup.Remove {
+			logger.Info("Has unhealthy process group", "processGroup", processGroup.ProcessGroupID, "state", "HasUnhealthyProcess")
 			cluster.Status.Generations.HasUnhealthyProcess = cluster.ObjectMeta.Generation
 			reconciled = false
 		}
 	}
 
 	if !cluster.Status.Health.Available {
+		logger.Info("Database unavailable", "state", "DatabaseUnavailable")
 		cluster.Status.Generations.DatabaseUnavailable = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
 
 	desiredConfiguration := cluster.DesiredDatabaseConfiguration()
-	if !reflect.DeepEqual(cluster.Status.DatabaseConfiguration, desiredConfiguration) {
+	if !equality.Semantic.DeepEqual(cluster.Status.DatabaseConfiguration, desiredConfiguration) {
+		logger.Info("Pending database configuration change", "state", "NeedsConfigurationChange")
 		cluster.Status.Generations.NeedsConfigurationChange = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
 
 	if cluster.Status.HasIncorrectConfigMap {
+		logger.Info("Pending ConfigMap (Monitor config) configuration change", "state", "NeedsMonitorConfUpdate")
 		cluster.Status.Generations.NeedsMonitorConfUpdate = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
 
 	if cluster.Status.HasIncorrectServiceConfig {
+		logger.Info("Pending Service configuration change", "state", "NeedsServiceUpdate")
 		cluster.Status.Generations.NeedsServiceUpdate = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
 
 	if cluster.Status.NeedsNewCoordinators {
+		logger.Info("Pending coordinator change", "state", "NeedsNewCoordinators")
 		cluster.Status.Generations.NeedsCoordinatorChange = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
@@ -1320,6 +1465,7 @@ func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
 	}
 
 	if cluster.Status.RequiredAddresses != desiredAddressSet {
+		logger.Info("Pending TLS change", "state", "HasExtraListeners")
 		cluster.Status.Generations.HasExtraListeners = cluster.ObjectMeta.Generation
 		reconciled = false
 	}
@@ -1335,6 +1481,7 @@ func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
 			continue
 		}
 		if allow {
+			logger.Info("Pending lock acquire for configuration changes", "state", "NeedsLockConfigurationChanges", "allowed", allow)
 			cluster.Status.Generations.NeedsLockConfigurationChanges = cluster.ObjectMeta.Generation
 			reconciled = false
 		} else {
@@ -1344,6 +1491,7 @@ func (cluster *FoundationDBCluster) CheckReconciliation() (bool, error) {
 
 	for _, allow := range lockDenyMap {
 		if !allow {
+			logger.Info("Pending lock acquire for configuration changes", "state", "NeedsLockConfigurationChanges", "allowed", allow)
 			cluster.Status.Generations.NeedsLockConfigurationChanges = cluster.ObjectMeta.Generation
 			reconciled = false
 			break
@@ -1389,118 +1537,6 @@ func (counts ProcessCounts) diff(currentCounts ProcessCounts) map[ProcessClass]i
 	return diff
 }
 
-// FoundationDBStatus describes the status of the cluster as provided by
-// FoundationDB itself.
-type FoundationDBStatus struct {
-	// Client provides the client section of the status.
-	Client FoundationDBStatusLocalClientInfo `json:"client,omitempty"`
-
-	// Cluster provides the cluster section of the status.
-	Cluster FoundationDBStatusClusterInfo `json:"cluster,omitempty"`
-}
-
-// FoundationDBStatusLocalClientInfo contains information about the
-// client connection from the process getting the status.
-type FoundationDBStatusLocalClientInfo struct {
-	// Coordinators provides information about the cluster's coordinators.
-	Coordinators FoundationDBStatusCoordinatorInfo `json:"coordinators,omitempty"`
-
-	// DatabaseStatus provides a summary of the database's health.
-	DatabaseStatus FoundationDBStatusClientDBStatus `json:"database_status,omitempty"`
-}
-
-// FoundationDBStatusCoordinatorInfo contains information about the client's
-// connection to the coordinators.
-type FoundationDBStatusCoordinatorInfo struct {
-	// Coordinators provides a list with coordinator details.
-	Coordinators []FoundationDBStatusCoordinator `json:"coordinators,omitempty"`
-}
-
-// FoundationDBStatusCoordinator contains information about one of the
-// coordinators.
-type FoundationDBStatusCoordinator struct {
-	// Address provides the coordinator's address.
-	Address string `json:"address,omitempty"`
-
-	// Reachable indicates whether the coordinator is reachable.
-	Reachable bool `json:"reachable,omitempty"`
-}
-
-// FoundationDBStatusClusterInfo describes the "cluster" portion of the
-// cluster status
-type FoundationDBStatusClusterInfo struct {
-	// DatabaseConfiguration describes the current configuration of the
-	// database.
-	DatabaseConfiguration DatabaseConfiguration `json:"configuration,omitempty"`
-
-	// Processes provides details on the processes that are reporting to the
-	// cluster.
-	Processes map[string]FoundationDBStatusProcessInfo `json:"processes,omitempty"`
-
-	// Data provides information about the data in the database.
-	Data FoundationDBStatusDataStatistics `json:"data,omitempty"`
-
-	// FullReplication indicates whether the database is fully replicated.
-	FullReplication bool `json:"full_replication,omitempty"`
-
-	// Clients provides information about clients that are connected to the
-	// database.
-	Clients FoundationDBStatusClusterClientInfo `json:"clients,omitempty"`
-
-	// Layers provides information about layers that are running against the
-	// cluster.
-	Layers FoundationDBStatusLayerInfo `json:"layers,omitempty"`
-}
-
-// FoundationDBStatusProcessInfo describes the "processes" portion of the
-// cluster status
-type FoundationDBStatusProcessInfo struct {
-	// Address provides the address of the process.
-	Address string `json:"address,omitempty"`
-
-	// ProcessClass provides the process class the process has been given.
-	ProcessClass ProcessClass `json:"class_type,omitempty"`
-
-	// CommandLine provides the command-line invocation for the process.
-	CommandLine string `json:"command_line,omitempty"`
-
-	// Excluded indicates whether the process has been excluded.
-	Excluded bool `json:"excluded,omitempty"`
-
-	// The locality information for the process.
-	Locality map[string]string `json:"locality,omitempty"`
-
-	// The version of FoundationDB the process is running.
-	Version string `json:"version,omitempty"`
-
-	// The time that the process has been up for.
-	UptimeSeconds float64 `json:"uptime_seconds,omitempty"`
-}
-
-// FoundationDBStatusDataStatistics provides information about the data in
-// the database
-type FoundationDBStatusDataStatistics struct {
-	// KVBytes provides the total Key Value Bytes in the database.
-	KVBytes int `json:"total_kv_size_bytes,omitempty"`
-
-	// MovingData provides information about the current data movement.
-	MovingData FoundationDBStatusMovingData `json:"moving_data,omitempty"`
-}
-
-// FoundationDBStatusMovingData provides information about the current data
-// movement
-type FoundationDBStatusMovingData struct {
-	// HighestPriority provides the priority of the highest-priority data
-	// movement.
-	HighestPriority int `json:"highest_priority,omitempty"`
-
-	// InFlightBytes provides how many bytes are being actively moved.
-	InFlightBytes int `json:"in_flight_bytes,omitempty"`
-
-	// InQueueBytes provides how many bytes are pending data movement.
-	InQueueBytes int `json:"in_queue_bytes,omitempty"`
-}
-
 // alphanum provides the characters that are used for the generation ID in the
 // connection string.
 var alphanum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -1513,14 +1549,14 @@ var connectionStringPattern = regexp.MustCompile("(?m)^([^#][^:@]+):([^:@]+)@(.*
 type ConnectionString struct {
 	// DatabaseName provides an identifier for the database which persists
 	// across coordinator changes.
-	DatabaseName string
+	DatabaseName string `json:"databaseName,omitempty"`
 
 	// GenerationID provides a unique ID for the current generation of
 	// coordinators.
-	GenerationID string
+	GenerationID string `json:"generationID,omitempty"`
 
 	// Coordinators provides the addresses of the current coordinators.
-	Coordinators []string
+	Coordinators []ProcessAddress `json:"coordinators,omitempty"`
 }
 
 // ParseConnectionString parses a connection string from its string
@@ -1528,18 +1564,30 @@ type ConnectionString struct {
 func ParseConnectionString(str string) (ConnectionString, error) {
 	components := connectionStringPattern.FindStringSubmatch(str)
 	if components == nil {
-		return ConnectionString{}, fmt.Errorf("Invalid connection string %s", str)
+		return ConnectionString{}, fmt.Errorf("invalid connection string %s", str)
 	}
+
+	coordinatorsStrings := strings.Split(components[3], ",")
+	coordinators := make([]ProcessAddress, len(coordinatorsStrings))
+	for idx, coordinatorsString := range coordinatorsStrings {
+		coordinatorAddress, err := ParseProcessAddress(coordinatorsString)
+		if err != nil {
+			return ConnectionString{}, err
+		}
+
+		coordinators[idx] = coordinatorAddress
+	}
+
 	return ConnectionString{
 		components[1],
 		components[2],
-		strings.Split(components[3], ","),
+		coordinators,
 	}, nil
 }
 
 // String formats a connection string as a string
 func (str *ConnectionString) String() string {
-	return fmt.Sprintf("%s:%s@%s", str.DatabaseName, str.GenerationID, strings.Join(str.Coordinators, ","))
+	return fmt.Sprintf("%s:%s@%s", str.DatabaseName, str.GenerationID, ProcessAddressesString(str.Coordinators, ","))
 }
 
 // GenerateNewGenerationID builds a new generation ID
@@ -1557,42 +1605,204 @@ func (str *ConnectionString) GenerateNewGenerationID() error {
 
 // ProcessAddress provides a structured address for a process.
 type ProcessAddress struct {
-	IPAddress string
-	Port      int
-	Flags     map[string]bool
+	IPAddress   net.IP          `json:"address,omitempty"`
+	Placeholder string          `json:"-"`
+	Port        int             `json:"port,omitempty"`
+	Flags       map[string]bool `json:"flags,omitempty"`
+}
+
+// NewProcessAddress creates a new ProcessAddress if the provided placeholder is a valid IP address it will be set as
+// IPAddress.
+func NewProcessAddress(address net.IP, placeholder string, port int, flags map[string]bool) ProcessAddress {
+	pAddr := ProcessAddress{
+		IPAddress:   address,
+		Placeholder: placeholder,
+		Port:        port,
+		Flags:       flags,
+	}
+
+	// If we have a valid IP address in the Placeholder we can set the
+	// IPAddress accordingly.
+	ip := net.ParseIP(pAddr.Placeholder)
+	if ip != nil {
+		pAddr.IPAddress = ip
+		pAddr.Placeholder = ""
+	}
+
+	return pAddr
+}
+
+// IsEmpty returns true if a ProcessAddress is not set
+func (address ProcessAddress) IsEmpty() bool {
+	return address.IPAddress == nil
+}
+
+// Equal checks if two ProcessAddress are the same
+func (address ProcessAddress) Equal(addressB ProcessAddress) bool {
+	if !address.IPAddress.Equal(addressB.IPAddress) {
+		return false
+	}
+
+	if address.Port != addressB.Port {
+		return false
+	}
+
+	if len(address.Flags) != len(addressB.Flags) {
+		return false
+	}
+
+	for k, v := range address.Flags {
+		if v != addressB.Flags[k] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// ProcessAddressesString converts a slice of ProcessAddress into a string joined by the separator
+func ProcessAddressesString(pAddrs []ProcessAddress, sep string) string {
+	sb := strings.Builder{}
+	maxIdx := len(pAddrs) - 1
+	for idx, pAddr := range pAddrs {
+		sb.WriteString(pAddr.String())
+
+		if idx < maxIdx {
+			sb.WriteString(sep)
+		}
+	}
+
+	return sb.String()
+}
+
+// ProcessAddressesStringWithoutFlags converts a slice of ProcessAddress into a string joined by the separator
+// without the flags
+func ProcessAddressesStringWithoutFlags(pAddrs []ProcessAddress, sep string) string {
+	sb := strings.Builder{}
+	maxIdx := len(pAddrs) - 1
+	for idx, pAddr := range pAddrs {
+		sb.WriteString(pAddr.StringWithoutFlags())
+
+		if idx < maxIdx {
+			sb.WriteString(sep)
+		}
+	}
+
+	return sb.String()
+}
+
+// UnmarshalJSON defines the parsing method for the ProcessAddress field from JSON to struct
+func (address *ProcessAddress) UnmarshalJSON(data []byte) error {
+	trimmed := strings.Trim(string(data), "\"")
+	parsedAddr, err := ParseProcessAddress(trimmed)
+	if err != nil {
+		return err
+	}
+
+	*address = parsedAddr
+
+	return nil
+}
+
+// MarshalJSON defines the parsing method for the ProcessAddress field from struct to JSON
+func (address ProcessAddress) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("\"%s\"", address.String())), nil
 }
 
 // ParseProcessAddress parses a structured address from its string
 // representation.
 func ParseProcessAddress(address string) (ProcessAddress, error) {
 	result := ProcessAddress{}
-	components := strings.Split(address, ":")
 
-	if len(components) < 2 {
-		return result, fmt.Errorf("Invalid address: %s", address)
-	}
+	// In order to find the address port pair we will go over the address stored in a tmp String.
+	// The idea is to split from the right to the left. If we find a Substring that is not a valid host port pair
+	// we can trim the last part and store it as a flag e.g. ":tls" and try the next substring with the flag removed.
+	// Currently FoundationDB only supports the "tls" flag but with this function we are able to also parse any additional
+	// future flags.
+	tmpStr := address
+	for tmpStr != "" {
+		addr, port, err := net.SplitHostPort(tmpStr)
 
-	result.IPAddress = components[0]
-
-	port, err := strconv.Atoi(components[1])
-	if err != nil {
-		return result, err
-	}
-	result.Port = port
-
-	if len(components) > 2 {
-		result.Flags = make(map[string]bool, len(components)-2)
-		for _, flag := range components[2:] {
-			result.Flags[flag] = true
+		// If we didn't get an error we found the addr:port
+		// part of the ProcessAddress.
+		if err == nil {
+			result.IPAddress = net.ParseIP(addr)
+			iPort, err := strconv.Atoi(port)
+			if err != nil {
+				return result, err
+			}
+			result.Port = iPort
+			break
 		}
+
+		// Search for the last : in our tmpStr.
+		// If there is no other : in our tmpStr we can abort since we don't
+		// have a valid address port pair left.
+		idx := strings.LastIndex(tmpStr, ":")
+		if idx == -1 {
+			break
+		}
+
+		if result.Flags == nil {
+			result.Flags = map[string]bool{}
+		}
+
+		result.Flags[tmpStr[idx+1:]] = true
+		tmpStr = tmpStr[:idx]
+	}
+
+	if result.IPAddress == nil {
+		return result, fmt.Errorf("invalid address: %s", address)
 	}
 
 	return result, nil
 }
 
+func parseAddresses(addrs []string) ([]ProcessAddress, error) {
+	pAddresses := make([]ProcessAddress, len(addrs))
+
+	for idx, addr := range addrs {
+		pAddr, err := ParseProcessAddress(addr)
+		if err != nil {
+			return pAddresses, err
+		}
+
+		pAddresses[idx] = pAddr
+	}
+
+	return pAddresses, nil
+}
+
+// ParseProcessAddressesFromCmdline returns the ProcessAddress slice parsed from the commandline
+// of the process.
+func ParseProcessAddressesFromCmdline(cmdline string) ([]ProcessAddress, error) {
+	addrReg, err := regexp.Compile(`--public_address=(\S+)`)
+	if err != nil {
+		return nil, err
+	}
+
+	res := addrReg.FindStringSubmatch(cmdline)
+	if len(res) != 2 {
+		return nil, fmt.Errorf("invalid cmdline with missing public_address: %s", cmdline)
+	}
+
+	return parseAddresses(strings.Split(res[1], ","))
+}
+
 // String gets the string representation of an address.
 func (address ProcessAddress) String() string {
-	result := address.IPAddress + ":" + strconv.Itoa(address.Port)
+	if address.Port == 0 {
+		return address.IPAddress.String()
+	}
+
+	var sb strings.Builder
+	// We have to do this since we are creating a template file for the processes.
+	// The template file will contain variables like POD_IP which is not a valid net.IP :)
+	if address.Placeholder == "" {
+		sb.WriteString(net.JoinHostPort(address.IPAddress.String(), strconv.Itoa(address.Port)))
+	} else {
+		sb.WriteString(net.JoinHostPort(address.Placeholder, strconv.Itoa(address.Port)))
+	}
 
 	flags := make([]string, 0, len(address.Flags))
 	for flag, set := range address.Flags {
@@ -1605,17 +1815,32 @@ func (address ProcessAddress) String() string {
 		return flags[i] < flags[j]
 	})
 
-	for _, flag := range flags {
-		result = result + ":" + flag
+	if len(flags) > 0 {
+		sb.WriteString(":" + strings.Join(flags, ":"))
 	}
 
-	return result
+	return sb.String()
+}
+
+// StringWithoutFlags gets the string representation of an address without flags.
+func (address ProcessAddress) StringWithoutFlags() string {
+	if address.Port == 0 {
+		return address.IPAddress.String()
+	}
+
+	return net.JoinHostPort(address.IPAddress.String(), strconv.Itoa(address.Port))
 }
 
 // GetFullAddress gets the full public address we should use for a process.
 // This will include the IP address, the port, and any additional flags.
-func (cluster *FoundationDBCluster) GetFullAddress(ipAddress string, processNumber int) string {
-	return cluster.GetFullAddressList(ipAddress, true, processNumber)
+func (cluster *FoundationDBCluster) GetFullAddress(ipAddress string, processNumber int) ProcessAddress {
+	addresses := cluster.GetFullAddressList(ipAddress, true, processNumber)
+	if len(addresses) < 1 {
+		return ProcessAddress{}
+	}
+
+	// First element will always be the primary
+	return addresses[0]
 }
 
 // GetProcessPort returns the expected port for a given process number
@@ -1636,26 +1861,29 @@ func GetProcessPort(processNumber int, tls bool) int {
 // If a process needs multiple addresses, this will include all of them,
 // separated by commas. If you pass false for primaryOnly, this will return only
 // the primary address.
-func (cluster *FoundationDBCluster) GetFullAddressList(ipAddress string, primaryOnly bool, processNumber int) string {
-	addressMap := make(map[string]bool)
-
+func (cluster *FoundationDBCluster) GetFullAddressList(address string, primaryOnly bool, processNumber int) []ProcessAddress {
+	addrs := make([]ProcessAddress, 0, 2)
+	// When a TLS address is provided the TLS address will always be the primary address
+	// see: https://github.com/apple/foundationdb/blob/master/fdbrpc/FlowTransport.h#L49-L56
 	if cluster.Status.RequiredAddresses.TLS {
-		addressMap[fmt.Sprintf("%s:%d:tls", ipAddress, GetProcessPort(processNumber, true))] = cluster.Spec.MainContainer.EnableTLS
-	}
-	if cluster.Status.RequiredAddresses.NonTLS {
-		addressMap[fmt.Sprintf("%s:%d", ipAddress, GetProcessPort(processNumber, false))] = !cluster.Spec.MainContainer.EnableTLS
-	}
+		pAddr := NewProcessAddress(nil, address, GetProcessPort(processNumber, true), map[string]bool{"tls": true})
+		addrs = append(addrs, pAddr)
 
-	addresses := make([]string, 1, 1+len(addressMap))
-	for address, primary := range addressMap {
-		if primary {
-			addresses[0] = address
-		} else if !primaryOnly {
-			addresses = append(addresses, address)
+		if cluster.Status.RequiredAddresses.TLS && primaryOnly {
+			return addrs
 		}
 	}
 
-	return strings.Join(addresses, ",")
+	if cluster.Status.RequiredAddresses.NonTLS {
+		pAddr := NewProcessAddress(nil, address, GetProcessPort(processNumber, false), nil)
+		if !cluster.Status.RequiredAddresses.TLS && primaryOnly {
+			return []ProcessAddress{pAddr}
+		}
+
+		addrs = append(addrs, pAddr)
+	}
+
+	return addrs
 }
 
 // GetFullSidecarVersion gets the version of the image for the sidecar,
@@ -1677,12 +1905,14 @@ func (cluster *FoundationDBCluster) GetFullSidecarVersion(useRunningVersion bool
 
 // HasCoordinators checks whether this connection string matches a set of
 // coordinators.
-func (str *ConnectionString) HasCoordinators(coordinators []string) bool {
+func (str *ConnectionString) HasCoordinators(coordinators []ProcessAddress) bool {
 	matchedCoordinators := make(map[string]bool, len(str.Coordinators))
 	for _, address := range str.Coordinators {
-		matchedCoordinators[address] = false
+		matchedCoordinators[address.String()] = false
 	}
-	for _, address := range coordinators {
+
+	for _, pAddr := range coordinators {
+		address := pAddr.String()
 		_, matched := matchedCoordinators[address]
 		if matched {
 			matchedCoordinators[address] = true
@@ -1690,11 +1920,13 @@ func (str *ConnectionString) HasCoordinators(coordinators []string) bool {
 			return false
 		}
 	}
+
 	for _, matched := range matchedCoordinators {
 		if !matched {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -1774,97 +2006,16 @@ type DataCenter struct {
 	Satellite int `json:"satellite,omitempty"`
 }
 
-// FoundationDBStatusClientDBStatus represents the databaseStatus field in the
-// JSON database status
-type FoundationDBStatusClientDBStatus struct {
-	// Available indicates whether the database is accepting traffic.
-	Available bool `json:"available,omitempty"`
-
-	// Healthy indicates whether the database is fully healthy.
-	Healthy bool `json:"healthy,omitempty"`
-}
-
-// FoundationDBStatusClusterClientInfo represents the connected client details in the
-// cluster status.
-type FoundationDBStatusClusterClientInfo struct {
-	// Count provides the number of clients connected to the database.
-	Count int `json:"count,omitempty"`
-
-	// SupportedVersions provides information about the versions supported by
-	// the connected clients.
-	SupportedVersions []FoundationDBStatusSupportedVersion `json:"supported_versions,omitempty"`
-}
-
-// FoundationDBStatusSupportedVersion provides information about a version of
-// FDB supported by the connected clients.
-type FoundationDBStatusSupportedVersion struct {
-	// ClientVersion provides the version of FDB the client is connecting
-	// through.
-	ClientVersion string `json:"client_version,omitempty"`
-
-	// ConnectedClient provides the clients that are using this version.
-	ConnectedClients []FoundationDBStatusConnectedClient `json:"connected_clients"`
-
-	// MaxProtocolClients provides the clients that are using this version as
-	// their highest supported protocol version.
-	MaxProtocolClients []FoundationDBStatusConnectedClient `json:"max_protocol_clients"`
-
-	// ProtocolVersion is the version of the wire protocol the client is using.
-	ProtocolVersion string `json:"protocol_version,omitempty"`
-
-	// SourceVersion is the version of the source code that the client library
-	// was built from.
-	SourceVersion string `json:"source_version,omitempty"`
-}
-
-// FoundationDBStatusConnectedClient provides information about a client that
-// is connected to the database.
-type FoundationDBStatusConnectedClient struct {
-	// Address provides the address the client is connecting from.
-	Address string `json:"address,omitempty"`
-
-	// LogGroup provides the trace log group the client has set.
-	LogGroup string `json:"log_group,omitempty"`
-}
-
-// Description returns a string description of the a connected client.
-func (client FoundationDBStatusConnectedClient) Description() string {
-	if client.LogGroup == "default" || client.LogGroup == "" {
-		return client.Address
-	}
-	return fmt.Sprintf("%s (%s)", client.Address, client.LogGroup)
-}
-
-// FoundationDBStatusLayerInfo provides information about layers that are
-// running against the cluster.
-type FoundationDBStatusLayerInfo struct {
-	// Backup provides information about backups that have been started.
-	Backup FoundationDBStatusBackupInfo `json:"backup,omitempty"`
-
-	// The error from the layer status.
-	Error string `json:"_error,omitempty"`
-}
-
-// FoundationDBStatusBackupInfo provides information about backups that have been started.
-type FoundationDBStatusBackupInfo struct {
-	// Paused tells whether the backups are paused.
-	Paused bool `json:"paused,omitempty"`
-
-	// Tags provides information about specific backups.
-	Tags map[string]FoundationDBStatusBackupTag `json:"tags,omitempty"`
-}
-
-// FoundationDBStatusBackupTag provides information about a backup under a tag
-// in the cluster status.
-type FoundationDBStatusBackupTag struct {
-	CurrentContainer string `json:"current_container,omitempty"`
-	RunningBackup    bool   `json:"running_backup,omitempty"`
-	Restorable       bool   `json:"running_backup_is_restorable,omitempty"`
-}
-
 // ContainerOverrides provides options for customizing a container created by
 // the operator.
 type ContainerOverrides struct {
+	// EnableLivenessProbe defines if the sidecar should have a livenessProbe.
+	// This setting will be ignored on the main container.
+	EnableLivenessProbe *bool `json:"enableLivenessProbe,omitempty"`
+
+	// EnableReadinessProbe defines if the sidecar should have a readinessProbe.
+	// This setting will be ignored on the main container.
+	EnableReadinessProbe *bool `json:"enableReadinessProbe,omitempty"`
 
 	// EnableTLS controls whether we should be listening on a TLS connection.
 	EnableTLS bool `json:"enableTls,omitempty"`
@@ -2010,6 +2161,7 @@ func (cluster *FoundationDBCluster) ShouldUseLocks() bool {
 	if disabled != nil {
 		return !*disabled
 	}
+
 	return cluster.Spec.FaultDomain.ZoneCount > 1 || len(cluster.Spec.DatabaseConfiguration.Regions) > 1
 }
 
@@ -2041,13 +2193,13 @@ func (cluster *FoundationDBCluster) GetLockID() string {
 // NeedsExplicitListenAddress determines whether we pass a listen address
 // parameter to fdbserver.
 func (cluster *FoundationDBCluster) NeedsExplicitListenAddress() bool {
-	source := cluster.Spec.Services.PublicIPSource
+	source := cluster.Spec.Routing.PublicIPSource
 	return source != nil && *source == PublicIPSourceService
 }
 
 // GetPublicIPSource returns the set PublicIPSource or the default PublicIPSourcePod
 func (cluster *FoundationDBCluster) GetPublicIPSource() PublicIPSource {
-	source := cluster.Spec.Services.PublicIPSource
+	source := cluster.Spec.Routing.PublicIPSource
 	if source == nil {
 		return PublicIPSourcePod
 	}
@@ -2430,6 +2582,7 @@ type LockDenyListEntry struct {
 }
 
 // ServiceConfig allows configuring services that sit in front of our pods.
+// Deprecated: Use RoutingConfig instead.
 type ServiceConfig struct {
 	// Headless determines whether we want to run a headless service for the
 	// cluster.
@@ -2440,6 +2593,26 @@ type ServiceConfig struct {
 	//
 	// This supports the values `pod` and `service`.
 	PublicIPSource *PublicIPSource `json:"publicIPSource,omitempty"`
+}
+
+// RoutingConfig allows configuring routing to our pods, and services that sit
+// in front of them.
+type RoutingConfig struct {
+	// Headless determines whether we want to run a headless service for the
+	// cluster.
+	HeadlessService *bool `json:"headlessService,omitempty"`
+
+	// PublicIPSource specifies what source a process should use to get its
+	// public IPs.
+	//
+	// This supports the values `pod` and `service`.
+	PublicIPSource *PublicIPSource `json:"publicIPSource,omitempty"`
+
+	// PodIPFamily tells the pod which family of IP addresses to use.
+	// You can use 4 to represent IPv4, and 6 to represent IPv6.
+	// This feature is only supported in FDB 7.0 or later, and requires
+	// dual-stack support in your Kubernetes environment.
+	PodIPFamily *int `json:"podIPFamily,omitempty"`
 }
 
 // RequiredAddressSet provides settings for which addresses we need to listen
@@ -2460,6 +2633,27 @@ type BuggifyConfig struct {
 	// CrashLoops defines a list of instance IDs that should be put into a
 	// crash looping state.
 	CrashLoop []string `json:"crashLoop,omitempty"`
+
+	// EmptyMonitorConf instructs the operator to update all of the fdbmonitor.conf
+	// files to have zero fdbserver processes configured.
+	EmptyMonitorConf bool `json:"emptyMonitorConf,omitempty"`
+}
+
+// LabelConfig allows customizing labels used by the operator.
+type LabelConfig struct {
+	// MatchLabels provides the labels that the operator should use to identify
+	// resources owned by the cluster. These will automatically be applied to
+	// all resources the operator creates.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+
+	// ResourceLabels provides additional labels that the operator should apply to
+	// resources it creates.
+	ResourceLabels map[string]string `json:"resourceLabels,omitempty"`
+
+	// FilterOnOwnerReferences determines whether we should check that resources
+	// are owned by the cluster object, in addition to the constraints provided
+	// by the match labels.
+	FilterOnOwnerReferences *bool `json:"filterOnOwnerReference,omitempty"`
 }
 
 // PublicIPSource models options for how a pod gets its public IP.
@@ -2473,7 +2667,7 @@ const (
 	PublicIPSourceService PublicIPSource = "service"
 )
 
-// ProcessClass models the role of a pod
+// ProcessClass models the class of a pod
 type ProcessClass string
 
 const (
@@ -2491,6 +2685,11 @@ const (
 	ProcessClassClusterController ProcessClass = "cluster_controller"
 )
 
+// IsStateful determines whether a process class should store data.
+func (pClass ProcessClass) IsStateful() bool {
+	return pClass == ProcessClassStorage || pClass == ProcessClassLog || pClass == ProcessClassTransaction
+}
+
 // AddStorageServerPerDisk adds serverPerDisk to the status field to keep track which ConfigMaps should be kept
 func (clusterStatus *FoundationDBClusterStatus) AddStorageServerPerDisk(serversPerDisk int) {
 	for _, curServersPerDisk := range clusterStatus.StorageServersPerDisk {
@@ -2500,4 +2699,57 @@ func (clusterStatus *FoundationDBClusterStatus) AddStorageServerPerDisk(serversP
 	}
 
 	clusterStatus.StorageServersPerDisk = append(clusterStatus.StorageServersPerDisk, serversPerDisk)
+}
+
+// GetMaxConcurrentReplacements returns the cluster setting for MaxConcurrentReplacements, defaults to 1 if unset.
+func (cluster *FoundationDBCluster) GetMaxConcurrentReplacements() int {
+	if cluster.Spec.AutomationOptions.Replacements.MaxConcurrentReplacements == nil {
+		return 1
+	}
+
+	return *cluster.Spec.AutomationOptions.Replacements.MaxConcurrentReplacements
+}
+
+// CoordinatorSelectionSetting defines the process class and the priority of it.
+// A higher priority means that the process class is preferred over another.
+type CoordinatorSelectionSetting struct {
+	ProcessClass ProcessClass `json:"processClass,omitempty"`
+	Priority     int          `json:"priority,omitempty"`
+}
+
+// IsEligibleAsCandidate checks if the given process has the right process class to be considered a valid coordinator.
+// This method will always return false for non stateful process classes.
+func (cluster *FoundationDBCluster) IsEligibleAsCandidate(pClass ProcessClass) bool {
+	if !pClass.IsStateful() {
+		return false
+	}
+
+	if len(cluster.Spec.CoordinatorSelection) == 0 {
+		return pClass.IsStateful()
+	}
+
+	for _, setting := range cluster.Spec.CoordinatorSelection {
+		if pClass == setting.ProcessClass {
+			return true
+		}
+	}
+
+	return false
+}
+
+// GetClassCandidatePriority returns the priority for a class. This will be used to sort the processes for coordinator selection
+func (cluster *FoundationDBCluster) GetClassCandidatePriority(pClass ProcessClass) int {
+	for _, setting := range cluster.Spec.CoordinatorSelection {
+		if pClass == setting.ProcessClass {
+			return setting.Priority
+		}
+	}
+
+	return math.MinInt64
+}
+
+// ShouldFilterOnOwnerReferences determines if we should check owner references
+// when determining if a resource is related to this cluster.
+func (cluster *FoundationDBCluster) ShouldFilterOnOwnerReferences() bool {
+	return cluster.Spec.LabelConfig.FilterOnOwnerReferences != nil && *cluster.Spec.LabelConfig.FilterOnOwnerReferences
 }

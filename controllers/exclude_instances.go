@@ -3,7 +3,7 @@
  *
  * This source file is part of the FoundationDB open source project
  *
- * Copyright 2019 Apple Inc. and the FoundationDB project authors
+ * Copyright 2019-2021 Apple Inc. and the FoundationDB project authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ package controllers
 import (
 	ctx "context"
 	"fmt"
-	"time"
+	"net"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -35,10 +35,10 @@ import (
 type ExcludeInstances struct{}
 
 // Reconcile runs the reconciler's work.
-func (e ExcludeInstances) Reconcile(r *FoundationDBClusterReconciler, context ctx.Context, cluster *fdbtypes.FoundationDBCluster) (bool, error) {
-	adminClient, err := r.AdminClientProvider(cluster, r)
+func (e ExcludeInstances) Reconcile(r *FoundationDBClusterReconciler, context ctx.Context, cluster *fdbtypes.FoundationDBCluster) *Requeue {
+	adminClient, err := r.getDatabaseClientProvider().GetAdminClient(cluster, r)
 	if err != nil {
-		return false, err
+		return &Requeue{Error: err}
 	}
 	defer adminClient.Close()
 
@@ -49,23 +49,23 @@ func (e ExcludeInstances) Reconcile(r *FoundationDBClusterReconciler, context ct
 		}
 	}
 
-	addresses := make([]string, 0, removalCount)
+	addresses := make([]fdbtypes.ProcessAddress, 0, removalCount)
 
 	if removalCount > 0 {
 		exclusions, err := adminClient.GetExclusions()
 		if err != nil {
-			return false, err
+			return &Requeue{Error: err}
 		}
 
 		currentExclusionMap := make(map[string]bool, len(exclusions))
 		for _, address := range exclusions {
-			currentExclusionMap[address] = true
+			currentExclusionMap[address.String()] = true
 		}
 
 		for _, processGroup := range cluster.Status.ProcessGroups {
 			for _, address := range processGroup.Addresses {
 				if processGroup.Remove && !processGroup.ExclusionSkipped && !currentExclusionMap[address] {
-					addresses = append(addresses, address)
+					addresses = append(addresses, fdbtypes.ProcessAddress{IPAddress: net.ParseIP(address)})
 				}
 			}
 		}
@@ -83,12 +83,12 @@ func (e ExcludeInstances) Reconcile(r *FoundationDBClusterReconciler, context ct
 		}
 		if len(missingProcesses) > 0 {
 			log.Info("Waiting for missing processes", "namespace", cluster.Namespace, "cluster", cluster.Name, "missingProcesses", missingProcesses)
-			return false, nil
+			return &Requeue{Message: fmt.Sprintf("Waiting for missing processes: %v", missingProcesses)}
 		}
 
 		hasLock, err := r.takeLock(cluster, fmt.Sprintf("excluding instances: %v", addresses))
 		if !hasLock {
-			return false, err
+			return &Requeue{Error: err}
 		}
 
 		r.Recorder.Event(cluster, corev1.EventTypeNormal, "ExcludingProcesses", fmt.Sprintf("Excluding %v", addresses))
@@ -96,15 +96,9 @@ func (e ExcludeInstances) Reconcile(r *FoundationDBClusterReconciler, context ct
 		err = adminClient.ExcludeInstances(addresses)
 
 		if err != nil {
-			return false, err
+			return &Requeue{Error: err}
 		}
 	}
 
-	return true, nil
-}
-
-// RequeueAfter returns the delay before we should run the reconciliation
-// again.
-func (e ExcludeInstances) RequeueAfter() time.Duration {
-	return 0
+	return nil
 }

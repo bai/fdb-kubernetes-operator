@@ -1,15 +1,15 @@
 
 # Image URL to use all building/pushing image targets
 IMG ?= fdb-kubernetes-operator:latest
-CRD_OPTIONS ?= "crd:trivialVersions=true,maxDescLen=0,crdVersions=v1"
-CONTROLLER_GEN_VERSION ?= 0.5.0
+CRD_OPTIONS ?= "crd:trivialVersions=true,maxDescLen=0,crdVersions=v1,generateEmbeddedObjectMeta=true"
+CONTROLLER_GEN_VERSION ?= 0.6.0-beta.0
 
 ifneq "$(FDB_WEBSITE)" ""
 	docker_build_args := $(docker_build_args) --build-arg FDB_WEBSITE=$(FDB_WEBSITE)
 endif
 
-ifndef RUN_E2E
-	 GINKGO_SKIP := -ginkgo.skip='[e2e]'
+ifdef RUN_E2E
+	 E2E_TAG := --tags=e2e
 endif
 
 
@@ -52,14 +52,14 @@ clean:
 # Run tests
 test:
 ifneq "$(SKIP_TEST)" "1"
-	go test ${go_test_flags} ./... -coverprofile cover.out $(GINKGO_SKIP)
+	go test ${go_test_flags} ./... -coverprofile cover.out $(E2E_TAG)
 endif
 
 test_if_changed: cover.out
 
 cover.out: ${GO_ALL} ${MANIFESTS}
 ifneq "$(SKIP_TEST)" "1"
-	go test ${go_test_flags} ./... -coverprofile cover.out -tags test $(GINKGO_SKIP)
+	go test ${go_test_flags} ./... -coverprofile cover.out -tags test $(E2E_TAG)
 endif
 
 # Build manager binary
